@@ -66,7 +66,8 @@ solstice-receptionist/
 ├── agent/
 │   ├── __init__.py
 │   ├── core.py              # PydanticAI agent definition, model config
-│   ├── session.py           # BookingSession dataclass, SessionStore (Redis)
+│   ├── models.py            # BookingSession and other agent/domain models
+│   ├── storage.py           # Redis SessionStore for session + message history
 │   ├── tools/
 │   │   ├── __init__.py
 │   │   ├── calendar.py      # check_slot, book_class, reschedule, cancel
@@ -145,6 +146,7 @@ class BookingSession:
 # Stores: BookingSession (as JSON) + message_history (as JSON list)
 # TTL: 3600 seconds (1 hour)
 
+# agent/storage.py
 class SessionStore:
     async def get(self, call_id: str) -> tuple[BookingSession, list] | None
     async def save(self, call_id: str, session: BookingSession, history: list) -> None
@@ -503,7 +505,7 @@ python vapi/setup.py
 ### Phase 1
 1. Google Calendar integration + seed script
 2. Google Sheets integration
-3. `BookingSession` dataclass + `SessionStore`
+3. `BookingSession` dataclass + Redis `SessionStore`
 4. PydanticAI agent with all tools wired
 5. FastAPI `/chat` route
 6. Plain HTML chat UI

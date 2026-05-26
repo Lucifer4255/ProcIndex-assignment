@@ -162,7 +162,7 @@ Run `scripts/seed_calendar.py` before any agent testing. It creates:
 Do these in sequence. Do not jump ahead.
 
 ### Step 1 — Agent hello world
-Build `BookingSession`, `SessionStore`, the system prompt, PydanticAI agent, FastAPI `/chat` route, and minimal chat UI before any Google complexity.
+Build `agent/models.py` (`BookingSession`), `agent/storage.py` (`SessionStore`), the system prompt, PydanticAI agent, FastAPI `/chat` route, and minimal chat UI before any Google complexity.
 Goal: verify the agent talks, Redis session persistence works, and the UI can send messages end-to-end.
 
 ### Step 2 — Google Calendar integration + seed
@@ -263,7 +263,8 @@ python vapi/setup.py
 | File | Purpose |
 |---|---|
 | `agent/core.py` | PydanticAI agent definition |
-| `agent/session.py` | BookingSession + Redis SessionStore |
+| `agent/models.py` | BookingSession and agent/domain models |
+| `agent/storage.py` | Redis SessionStore for active session + message history |
 | `agent/tools/calendar.py` | check_slot, book_class, reschedule, cancel |
 | `agent/tools/sheets.py` | log_call, get_caller_history |
 | `agent/tools/escalate.py` | escalate_to_human |

@@ -2,10 +2,158 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Solstice Pilates — Chat</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 640px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+    }
+    h1 { font-size: 1.25rem; margin-bottom: 0.25rem; }
+    .subtitle { color: #666; font-size: 0.875rem; margin-bottom: 1rem; }
+    #messages {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      min-height: 320px;
+      max-height: 480px;
+      overflow-y: auto;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      background: #fafafa;
+    }
+    .msg { margin-bottom: 0.75rem; }
+    .msg.user { text-align: right; }
+    .msg.user span {
+      background: #2563eb;
+      color: #fff;
+      display: inline-block;
+      padding: 0.5rem 0.75rem;
+      border-radius: 12px 12px 4px 12px;
+      max-width: 85%;
+      text-align: left;
+    }
+    .msg.assistant span {
+      background: #fff;
+      border: 1px solid #ddd;
+      display: inline-block;
+      padding: 0.5rem 0.75rem;
+      border-radius: 12px 12px 12px 4px;
+      max-width: 85%;
+    }
+    .msg .role {
+      font-size: 0.7rem;
+      color: #888;
+      margin-bottom: 0.2rem;
+    }
+    form { display: flex; gap: 0.5rem; }
+    input[type="text"] {
+      flex: 1;
+      padding: 0.6rem 0.75rem;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 1rem;
+    }
+    button {
+      padding: 0.6rem 1rem;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .error { color: #b91c1c; font-size: 0.875rem; margin-top: 0.5rem; }
+  </style>
 </head>
 <body>
-  <h1>Solstice Pilates Receptionist</h1>
-  <p>Chat UI — Phase 1</p>
+  <h1>Solstice Pilates</h1>
+  <p class="subtitle">Chat with Maya, the studio receptionist</p>
+
+  <div id="messages"></div>
+
+  <form id="chat-form">
+    <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" required />
+    <button type="submit" id="send-btn">Send</button>
+  </form>
+  <p id="error" class="error" hidden></p>
+
+  <script>
+    const sessionId = crypto.randomUUID();
+    const messagesEl = document.getElementById("messages");
+    const form = document.getElementById("chat-form");
+    const input = document.getElementById("message-input");
+    const sendBtn = document.getElementById("send-btn");
+    const errorEl = document.getElementById("error");
+
+    function appendMessage(role, text) {
+      const div = document.createElement("div");
+      div.className = `msg ${role}`;
+      div.innerHTML = `<div class="role">${role === "user" ? "You" : "Maya"}</div><span></span>`;
+      div.querySelector("span").textContent = text;
+      messagesEl.appendChild(div);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    async function startChat() {
+      sendBtn.disabled = true;
+      input.disabled = true;
+
+      try {
+        const res = await fetch("/chat/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || "Could not start chat");
+        }
+        appendMessage("assistant", data.response);
+      } catch (err) {
+        errorEl.textContent = err.message;
+        errorEl.hidden = false;
+      } finally {
+        input.disabled = false;
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    }
+
+    startChat();
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+
+      errorEl.hidden = true;
+      appendMessage("user", message);
+      input.value = "";
+      sendBtn.disabled = true;
+
+      try {
+        const res = await fetch("/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, session_id: sessionId }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || "Request failed");
+        }
+        appendMessage("assistant", data.response);
+      } catch (err) {
+        errorEl.textContent = err.message;
+        errorEl.hidden = false;
+      } finally {
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    });
+  </script>
 </body>
 </html>
