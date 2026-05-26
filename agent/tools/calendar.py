@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import agent.core as _core
 from pydantic_ai import RunContext
 
 from agent.models import BookingSession
@@ -61,6 +62,7 @@ async def _resolve_target_slot(session: BookingSession):
     return slot, None
 
 
+@_core._agent.tool
 async def check_slot(
     ctx: RunContext[BookingSession],
     class_type: str | None = None,
@@ -111,6 +113,7 @@ async def check_slot(
     return f"{format_slot_line(slot)}. No other open {slot.class_type} classes that day."
 
 
+@_core._agent.tool
 async def book_class(ctx: RunContext[BookingSession]) -> str:
     """Book the caller into the selected class slot using session details."""
     missing = ctx.deps.missing_for_booking()
@@ -149,6 +152,7 @@ async def book_class(ctx: RunContext[BookingSession]) -> str:
     )
 
 
+@_core._agent.tool
 async def reschedule(
     ctx: RunContext[BookingSession],
     new_date: str,
@@ -201,6 +205,7 @@ async def reschedule(
     return f"Rescheduled to {format_slot_line(updated)}."
 
 
+@_core._agent.tool
 async def cancel_booking(
     ctx: RunContext[BookingSession],
     date_value: str | None = None,
@@ -233,6 +238,6 @@ async def cancel_booking(
     if current is None:
         return "I couldn't find an existing booking for that phone number."
 
-    await client.remove_booking(current, ctx.deps.caller_phone)
+    await client.remove_booking(current, normalize_phone(ctx.deps.caller_phone))
     ctx.deps.booking_confirmed = False
     return f"Cancelled the booking for {format_slot_line(current)}."
