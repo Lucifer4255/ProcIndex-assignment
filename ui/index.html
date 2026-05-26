@@ -103,10 +103,10 @@
       input.disabled = true;
 
       try {
-        const res = await fetch("/chat/start", {
+        const res = await fetch("/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: sessionId }),
+          body: JSON.stringify({ message: "", session_id: sessionId }),
         });
         const data = await res.json();
         if (!res.ok) {

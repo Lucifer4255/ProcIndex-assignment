@@ -22,6 +22,8 @@ BOOKING_PATTERN = re.compile(
     r"([^,(]+?)\s*\(\s*(\+?\d[\d\s\-()]+)\s*\)",
 )
 
+CLASS_CAPACITY = {"Reformer": 10, "Mat": 15, "Tower": 8}
+
 
 @dataclass(frozen=True)
 class ClassBooking:
@@ -289,9 +291,149 @@ class GoogleCalendarClient:
             raise RuntimeError(f"Failed to parse seeded event for {class_type} at {start}")
         return slot
 
+    async def find_slot_at(
+        self,
+        class_type: str,
+        day: date,
+        hour: int,
+        minute: int = 0,
+    ) -> ClassSlot | None:
+        start = studio_datetime(day, hour, minute)
+        slots = await self.list_class_slots(start, start + timedelta(minutes=1), class_type)
+        for slot in slots:
+            if slot.start == start:
+                return slot
+        return None
+
+    async def list_slots_for_day(
+        self,
+        day: date,
+        class_type: str | None = None,
+    ) -> list[ClassSlot]:
+        start, end = slot_window_for_date(day)
+        return await self.list_class_slots(start, end, class_type)
+
+    async def find_booking_by_phone(
+        self,
+        phone: str,
+        start: datetime,
+        end: datetime,
+    ) -> ClassSlot | None:
+        target = normalize_phone(phone)
+        for slot in await self.list_class_slots(start, end):
+            for booking in slot.booked:
+                if normalize_phone(booking.phone) == target:
+                    return slot
+        return None
+
+    async def save_slot_bookings(self, slot: ClassSlot, booked: list[ClassBooking]) -> ClassSlot:
+        description = build_description(slot.class_type, slot.capacity, booked)
+        event = await self.patch_event(
+            slot.event_id,
+            {"description": description},
+        )
+        updated = parse_slot_from_event(event)
+        if updated is None:
+            raise RuntimeError(f"Failed to update bookings for event {slot.event_id}")
+        return updated
+
+    async def add_booking(self, slot: ClassSlot, name: str, phone: str) -> ClassSlot:
+        phone_n = normalize_phone(phone)
+        if any(normalize_phone(b.phone) == phone_n for b in slot.booked):
+            return slot
+        booked = [*slot.booked, ClassBooking(name=name.strip(), phone=phone_n)]
+        if len(booked) > slot.capacity:
+            raise ValueError("Class is full")
+        return await self.save_slot_bookings(slot, booked)
+
+    async def remove_booking(self, slot: ClassSlot, phone: str) -> ClassSlot:
+        phone_n = normalize_phone(phone)
+        booked = [b for b in slot.booked if normalize_phone(b.phone) != phone_n]
+        return await self.save_slot_bookings(slot, booked)
+
+    async def move_booking(
+        self,
+        phone: str,
+        target_slot: ClassSlot,
+        name: str | None = None,
+    ) -> ClassSlot:
+        phone_n = normalize_phone(phone)
+        search_start = studio_datetime(date.today(), 0)
+        search_end = search_start + timedelta(days=60)
+        current = await self.find_booking_by_phone(phone_n, search_start, search_end)
+        if current and current.event_id != target_slot.event_id:
+            await self.remove_booking(current, phone_n)
+
+        display_name = name
+        if not display_name and current:
+            for booking in current.booked:
+                if normalize_phone(booking.phone) == phone_n:
+                    display_name = booking.name
+                    break
+        if not display_name:
+            display_name = "Guest"
+
+        return await self.add_booking(target_slot, display_name, phone_n)
+
 
 def studio_datetime(day: date, hour: int, minute: int = 0) -> datetime:
     return datetime.combine(day, time(hour, minute), tzinfo=STUDIO_TZ)
+
+
+def normalize_phone(phone: str) -> str:
+    digits = re.sub(r"\D", "", phone)
+    if len(digits) == 10:
+        return f"+1{digits}"
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"+{digits}"
+    return phone.strip()
+
+
+def parse_time_string(value: str) -> tuple[int, int] | None:
+    raw = value.strip().lower().replace(" ", "")
+    if not raw:
+        return None
+
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", raw)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour, minute
+        return None
+
+    match = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?(am|pm)", raw)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2) or 0)
+        suffix = match.group(3)
+        if hour < 1 or hour > 12 or minute > 59:
+            return None
+        if suffix == "pm" and hour != 12:
+            hour += 12
+        if suffix == "am" and hour == 12:
+            hour = 0
+        return hour, minute
+
+    return None
+
+
+def slot_window_for_date(day: date) -> tuple[datetime, datetime]:
+    start = studio_datetime(day, 0)
+    end = studio_datetime(day, 23, 59)
+    return start, end
+
+
+def format_slot_line(slot: ClassSlot) -> str:
+    day_label = f"{slot.start.strftime('%A %b')} {slot.start.day}"
+    time_label = format_time_label(slot.start)
+    if slot.is_full:
+        spots = "full"
+    elif slot.remaining_spots == 1:
+        spots = "1 spot left"
+    else:
+        spots = f"{slot.remaining_spots} spots left"
+    return f"{slot.class_type} {time_label} on {day_label} ({spots})"
 
 
 def create_calendar_client_from_env() -> GoogleCalendarClient:

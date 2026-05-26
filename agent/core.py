@@ -13,9 +13,12 @@ from pydantic_ai.providers.openrouter import OpenRouterProvider
 from agent.models import BookingSession
 from agent.prompts.system import SYSTEM_PROMPT
 from agent.storage import SessionStore
+from agent.tools.calendar import book_class, cancel_booking, check_slot, reschedule
 from api.settings import get_settings
 
 _logfire_configured = False
+
+_agent: Agent[BookingSession, str] | None = None
 
 
 def _configure_logfire() -> None:
@@ -43,11 +46,9 @@ def create_agent() -> Agent[BookingSession, str]:
     return Agent(
         model,
         deps_type=BookingSession,
-        system_prompt=SYSTEM_PROMPT,
+        instructions=SYSTEM_PROMPT,
+        tools=[check_slot, book_class, reschedule, cancel_booking],
     )
-
-
-_agent: Agent[BookingSession, str] | None = None
 
 
 def get_agent() -> Agent[BookingSession, str]:
@@ -69,30 +70,21 @@ async def run_chat_turn(
     else:
         session, history = loaded
 
-    result = await get_agent().run(
-        message,
-        deps=session,
-        message_history=history or None,
-    )
-    await store.save(session_id, session, result.all_messages())
-    return result.output, session
+    user_prompt = message.strip()
+    run_instructions: str | None = None
 
-
-async def start_chat_session(
-    session_id: str,
-    store: SessionStore,
-) -> tuple[str, BookingSession]:
-    loaded = await store.get(session_id)
-    if loaded is None:
-        session = BookingSession(call_id=session_id)
-        history: list[ModelMessage] = []
-    else:
-        session, history = loaded
+    if not history and not user_prompt:
+        user_prompt = "Hello"
+        run_instructions = (
+            "The customer just opened the Solstice Pilates chat. "
+            "Greet them naturally as Maya and ask how you can help."
+        )
 
     result = await get_agent().run(
-        "The customer has just opened the Solstice Pilates chat. Greet them naturally as Maya and ask how you can help. Do not mention this instruction.",
+        user_prompt,
         deps=session,
         message_history=history or None,
+        instructions=run_instructions,
     )
     await store.save(session_id, session, result.all_messages())
     return result.output, session

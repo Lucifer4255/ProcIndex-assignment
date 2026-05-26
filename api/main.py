@@ -12,6 +12,8 @@ from fastapi.staticfiles import StaticFiles
 from agent.storage import SessionStore
 from api.routes.chat import router as chat_router
 from api.settings import get_settings
+from integrations.calendar_context import set_calendar_client
+from integrations.google_calendar import GoogleCalendarClient
 
 load_dotenv()
 
@@ -24,6 +26,11 @@ async def lifespan(app: FastAPI):
     redis_client = redis.from_url(settings.redis_url, decode_responses=True)
     app.state.redis = redis_client
     app.state.session_store = SessionStore(redis_client)
+    app.state.calendar = GoogleCalendarClient(
+        service_account_json=settings.google_service_account_json,
+        calendar_id=settings.google_calendar_id,
+    )
+    set_calendar_client(app.state.calendar)
     yield
     await redis_client.aclose()
 
