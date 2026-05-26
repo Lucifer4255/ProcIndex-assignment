@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     logfire_token: str | None = None
     port: int = 8000
 
+    google_service_account_json: str
+    google_calendar_id: str
+    google_sheet_id: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:
