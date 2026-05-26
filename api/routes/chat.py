@@ -1,6 +1,7 @@
 """POST /chat — Phase 1 text chat endpoint."""
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic_ai.exceptions import UsageLimitExceeded
 
 from agent.core import run_chat_turn
 from api.schemas import ChatRequest, ChatResponse
@@ -20,6 +21,8 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
             message=body.message,
             store=store,
         )
+    except UsageLimitExceeded:
+        response = "Sorry, I got a bit turned around. Could you say that again?"
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

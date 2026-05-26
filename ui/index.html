@@ -73,7 +73,12 @@
   <h1>Solstice Pilates</h1>
   <p class="subtitle">Chat with Maya, the studio receptionist</p>
 
-  <div id="messages"></div>
+  <div id="messages">
+    <div class="msg assistant">
+      <div class="role">Maya</div>
+      <span>Thanks for reaching out to Solstice Pilates! How can I help you today?</span>
+    </div>
+  </div>
 
   <form id="chat-form">
     <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" required />
@@ -97,33 +102,6 @@
       messagesEl.appendChild(div);
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
-
-    async function startChat() {
-      sendBtn.disabled = true;
-      input.disabled = true;
-
-      try {
-        const res = await fetch("/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: "", session_id: sessionId }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.detail || "Could not start chat");
-        }
-        appendMessage("assistant", data.response);
-      } catch (err) {
-        errorEl.textContent = err.message;
-        errorEl.hidden = false;
-      } finally {
-        input.disabled = false;
-        sendBtn.disabled = false;
-        input.focus();
-      }
-    }
-
-    startChat();
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();

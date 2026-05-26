@@ -69,48 +69,68 @@ async def check_slot(
     date_value: str | None = None,
     time_value: str | None = None,
 ) -> str:
-    """Check class availability and suggest alternatives if a slot is full."""
-    missing = _merge_booking_fields(ctx.deps, class_type, date_value, time_value)
-    if missing:
-        return f"Still need: {', '.join(missing)}. I can check availability once I have those."
-
-    slot, error = await _resolve_target_slot(ctx.deps)
-    if error:
-        if slot is None and ctx.deps.preferred_date:
-            try:
-                day = date.fromisoformat(ctx.deps.preferred_date)
-            except ValueError:
-                return error
-            client = get_calendar_client()
-            day_slots = await client.list_slots_for_day(day, ctx.deps.class_type)
-            if not day_slots:
-                return error
-            available = [s for s in day_slots if not s.is_full]
-            if available:
-                alt_text = ". ".join(format_slot_line(s) for s in available[:3])
-                return f"No exact match for that time. Open options that day: {alt_text}."
-        return error
-
-    assert slot is not None
-    if not slot.is_full:
-        ctx.deps.slot_confirmed = True
-        return (
-            f"{format_slot_line(slot)}. "
-            f"Want me to book you into this {slot.class_type} class?"
-        )
+    """Check class availability. Call with whatever info you have — date, time, class type all optional."""
+    _merge_booking_fields(ctx.deps, class_type, date_value, time_value)
 
     client = get_calendar_client()
-    day = slot.start.date()
-    day_slots = await client.list_slots_for_day(day, slot.class_type)
-    alternatives = [
-        s for s in day_slots if not s.is_full and s.event_id != slot.event_id
-    ]
-    if alternatives:
-        alt_text = ". ".join(format_slot_line(s) for s in alternatives[:3])
-        return (
-            f"{format_slot_line(slot)}. Open alternatives that day: {alt_text}."
+
+    # If we have date + time but no class type, show all classes at that time.
+    if ctx.deps.preferred_date and ctx.deps.preferred_time and not ctx.deps.class_type:
+        try:
+            day = date.fromisoformat(ctx.deps.preferred_date)
+        except ValueError:
+            return "I need a valid date to check availability."
+        parsed = parse_time_string(ctx.deps.preferred_time)
+        if parsed is None:
+            return "I need a valid time to check availability."
+        hour, minute = parsed
+        target_dt = studio_datetime(day, hour, minute)
+        all_slots = await client.list_class_slots(
+            target_dt, target_dt + timedelta(minutes=1)
         )
-    return f"{format_slot_line(slot)}. No other open {slot.class_type} classes that day."
+        if not all_slots:
+            # Nothing at that exact time — show what's available that day
+            day_slots = await client.list_slots_for_day(day)
+            available = [s for s in day_slots if not s.is_full]
+            if available:
+                alt_text = ". ".join(format_slot_line(s) for s in available[:4])
+                return f"No classes at that time. Available that day: {alt_text}."
+            return "No classes available that day."
+        lines = ". ".join(format_slot_line(s) for s in all_slots)
+        return f"At that time: {lines}."
+
+    # If we have all three, look up the specific slot.
+    if ctx.deps.preferred_date and ctx.deps.preferred_time and ctx.deps.class_type:
+        slot, error = await _resolve_target_slot(ctx.deps)
+        if error:
+            return error
+        assert slot is not None
+        if not slot.is_full:
+            ctx.deps.slot_confirmed = True
+            return f"{format_slot_line(slot)}. Want me to book you in?"
+        # Full — show alternatives same class type same day
+        day = slot.start.date()
+        day_slots = await client.list_slots_for_day(day, slot.class_type)
+        alternatives = [s for s in day_slots if not s.is_full and s.event_id != slot.event_id]
+        if alternatives:
+            alt_text = ". ".join(format_slot_line(s) for s in alternatives[:3])
+            return f"{format_slot_line(slot)}. Other {slot.class_type} options that day: {alt_text}."
+        return f"{format_slot_line(slot)}. No other open {slot.class_type} classes that day."
+
+    # If we only have a date, show all available slots that day.
+    if ctx.deps.preferred_date:
+        try:
+            day = date.fromisoformat(ctx.deps.preferred_date)
+        except ValueError:
+            return "I need a valid date to check availability."
+        day_slots = await client.list_slots_for_day(day)
+        available = [s for s in day_slots if not s.is_full]
+        if not available:
+            return "No open classes that day."
+        alt_text = ". ".join(format_slot_line(s) for s in available[:4])
+        return f"Open classes that day: {alt_text}."
+
+    return "What date and time are you looking at?"
 
 
 @_core._agent.tool
