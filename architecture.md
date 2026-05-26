@@ -16,7 +16,7 @@ The agent uses progressive elicitation — it never fails on missing booking inf
 | Agent framework | PydanticAI v1.x | Dependency injection via RunContext handles BookingSession elegantly |
 | Web server | FastAPI + uvicorn | Async, native Pydantic, fast webhook responses |
 | Session store | Redis | Fast reads per webhook call, TTL-based cleanup, keyed by call.id |
-| LLM | Claude claude-sonnet-4-5 (Anthropic) | Best instruction following for voice prompt constraints |
+| LLM | Configurable via env — see Model Options below | Swappable across providers; OpenRouter recommended for dev |
 | Observability | Logfire | First-party PydanticAI integration, one decorator |
 | Calendar | Google Calendar API v3 (google-api-python-client) | freebusy query + events insert/patch/delete |
 | Caller log | Google Sheets API v4 | Contacts tab, one row per caller |
@@ -363,16 +363,56 @@ Handles two event types from Vapi:
 
 ---
 
+## Model Options
+
+Model is configurable via env vars — no hardcoded provider. Choose based on phase and budget.
+
+| Phase | Recommended | Why |
+|---|---|---|
+| Phase 1 dev | `meta-llama/llama-3.3-70b-instruct` via OpenRouter | Budget-friendly; validate tool calling before relying on it |
+| Phase 1 final check | `anthropic/claude-sonnet-4-5` via OpenRouter | Best instruction following if llama is flaky |
+| Phase 2 voice dev | `meta-llama/llama-3.3-70b-instruct` via Vapi OpenRouter provider | Low setup overhead with Vapi native OpenRouter support |
+| Phase 2 final demo | `anthropic/claude-sonnet-4-5` via OpenRouter or direct Anthropic | Best quality for submission video |
+
+**Key rule:** if tool calling is unreliable on a cheaper model, bump up — don't fight the prompt.
+
+### PydanticAI model config
+
+```python
+# agent/core.py — reads from env
+import os
+from pydantic_ai import Agent
+from pydantic_ai.models.openrouter import OpenRouterModel
+from pydantic_ai.providers.openrouter import OpenRouterProvider
+
+model = OpenRouterModel(
+    os.environ["LLM_MODEL"],
+    provider=OpenRouterProvider(api_key=os.environ["LLM_API_KEY"]),
+)
+
+agent = Agent(model=model, deps_type=BookingSession, ...)
+```
+
+PydanticAI has native OpenRouter support. Model IDs should be OpenRouter model IDs like `meta-llama/llama-3.3-70b-instruct` or `anthropic/claude-sonnet-4-5`.
+
+---
+
 ## Vapi Assistant Config (Phase 2)
 
 ```python
 # vapi/setup.py — run once to create assistant
+# Provider and model read from env
+
+import os
+
+VAPI_PROVIDER = os.environ.get("VAPI_LLM_PROVIDER", "openrouter")
+VAPI_MODEL    = os.environ.get("VAPI_LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
 
 assistant = {
     "name": "Solstice Pilates Receptionist",
     "model": {
-        "provider": "anthropic",
-        "model": "claude-sonnet-4-5",
+        "provider": VAPI_PROVIDER,       # "openrouter" | "anthropic" | "openai" etc.
+        "model": VAPI_MODEL,
         "systemPrompt": SYSTEM_PROMPT,
         "temperature": 0.4,
     },
@@ -395,17 +435,22 @@ assistant = {
 ```
 
 **Latency tuning:**
-- Use `claude-haiku-4-5` during development for speed, switch to `claude-sonnet-4-5` for final demo
 - Keep tool webhook responses under 2s (GCal calls are the bottleneck)
 - Wrap all GCal calls in `run_in_executor` — never block the event loop
+- If voice latency feels slow, try Groq provider directly on Vapi (`provider: "groq"`, `model: "llama-3.3-70b-versatile"`)
 
 ---
 
 ## Environment Variables
 
 ```env
-# Anthropic
-ANTHROPIC_API_KEY=
+# LLM (OpenRouter recommended — OpenAI-compatible)
+LLM_API_KEY=                   # OpenRouter key (or Anthropic key if using direct)
+LLM_MODEL=meta-llama/llama-3.3-70b-instruct # swap to anthropic/claude-sonnet-4-5 for demo
+
+# Vapi LLM (can differ from Phase 1 model)
+VAPI_LLM_PROVIDER=openrouter
+VAPI_LLM_MODEL=meta-llama/llama-3.3-70b-instruct
 
 # Google
 GOOGLE_SERVICE_ACCOUNT_JSON=   # path to service account key file

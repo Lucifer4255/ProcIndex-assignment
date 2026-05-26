@@ -29,6 +29,7 @@ ENV/
 .env
 
 # Google service account keys (never commit)
+secrets/
 *-service-account*.json
 credentials.json
 service-account*.json

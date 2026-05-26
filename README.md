@@ -8,7 +8,7 @@ AI text and voice receptionist for Solstice Pilates. Phase 1: chat UI. Phase 2: 
 - [uv](https://docs.astral.sh/uv/) (recommended) or venv
 - Docker (for local Redis)
 - Google Cloud service account with Calendar + Sheets APIs enabled
-- Anthropic API key
+- OpenRouter API key for local agent development
 
 ## Quick start
 
@@ -32,7 +32,10 @@ See `architecture.md`, `context.md`, and `execution.md` for full design and buil
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `LLM_API_KEY` | OpenRouter API key |
+| `LLM_MODEL` | OpenRouter model ID for Phase 1 agent |
+| `VAPI_LLM_PROVIDER` | Vapi LLM provider, usually `openrouter` |
+| `VAPI_LLM_MODEL` | Vapi model ID for Phase 2 voice |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Path to GCP service account JSON |
 | `GOOGLE_CALENDAR_ID` | Studio calendar ID |
 | `GOOGLE_SHEET_ID` | Contacts sheet ID |

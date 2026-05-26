@@ -22,7 +22,7 @@ The full architecture is in `architecture.md`. This file tells you how to execut
 | Agent framework | PydanticAI v1.x | LangChain, raw Anthropic SDK, Vercel AI SDK |
 | Web server | FastAPI + uvicorn | Flask, Django |
 | Session store | Redis | In-memory dict, SQLite |
-| LLM | claude-sonnet-4-5 via Anthropic | GPT-4, Gemini |
+| LLM | Configurable via env; OpenRouter recommended for dev | Hardcoded provider/model |
 | Calendar | google-api-python-client (sync, wrapped in executor) | gspread alternatives |
 | Observability | Logfire | LangSmith, Langfuse |
 | Voice platform | Vapi | Retell, Twilio directly, LiveKit |
@@ -161,37 +161,26 @@ Run `scripts/seed_calendar.py` before any agent testing. It creates:
 
 Do these in sequence. Do not jump ahead.
 
-### Step 1 — Google integrations
-Build `integrations/google_calendar.py` and `integrations/google_sheets.py`.
-Each exposes a class with async methods wrapping sync GCal/Sheets calls via `run_in_executor`.
-Test with `scripts/seed_calendar.py` — it should create events and verify the Contacts tab exists.
+### Step 1 — Agent hello world
+Build `BookingSession`, `SessionStore`, the system prompt, PydanticAI agent, FastAPI `/chat` route, and minimal chat UI before any Google complexity.
+Goal: verify the agent talks, Redis session persistence works, and the UI can send messages end-to-end.
 
-### Step 2 — BookingSession + SessionStore
-Build `agent/session.py`.
-`SessionStore` wraps Redis with `get()`, `save()`, `delete()`.
-Session is serialised as JSON. Message history is stored alongside it under the same key.
+### Step 2 — Google Calendar integration + seed
+Build `integrations/google_calendar.py` and `scripts/seed_calendar.py`.
+Calendar calls must use `run_in_executor`.
+Treat Calendar events as class slots; parse our stored capacity/bookings to compute remaining spots.
 
-### Step 3 — Tools
-Build `agent/tools/calendar.py`, `agent/tools/sheets.py`, `agent/tools/escalate.py`.
-Each tool is an async function decorated with `@agent.tool`.
-Tools update `ctx.deps` (BookingSession) and call the integration layer.
-Return plain strings — the LLM uses these to generate its response.
+### Step 3 — Calendar tools
+Build `agent/tools/calendar.py`.
+Register `check_slot`, `book_class`, `reschedule`, and `cancel_booking` on the agent.
+Test the full booking flow against Google Calendar before adding Sheets.
 
-### Step 4 — Agent core
-Build `agent/core.py`.
-Wire up PydanticAI agent with all tools, system prompt, and Anthropic model.
-Add Logfire instrumentation: `logfire.configure(); logfire.instrument_pydantic_ai()`.
+### Step 4 — Google Sheets integration + sheets/escalation tools
+Build `integrations/google_sheets.py`, `agent/tools/sheets.py`, and `agent/tools/escalate.py`.
+Use phone as the primary key and always upsert Contacts rows.
 
-### Step 5 — FastAPI routes
-Build `api/main.py` and `api/routes/chat.py`.
-`POST /chat` takes `{message, session_id}`, loads session, runs agent, saves session, returns response.
-Keep Phase 1 route simple — no streaming needed, correctness only.
-
-### Step 6 — Chat UI
-Build `ui/index.html`.
-Plain HTML form with a message input and response area.
-Calls `POST /chat` with fetch. Maintains `session_id` in JS memory.
-No styling points. Just needs to work for the demo video.
+### Step 5 — Phase 1 demo
+Fresh seed data, run the scripted booking flow, and record Calendar + Sheets updating alongside the chat UI.
 
 ---
 
