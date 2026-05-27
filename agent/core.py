@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import importlib
 import os
+from datetime import date
 
 import logfire
 from dotenv import load_dotenv
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.openrouter import OpenRouterModel
@@ -37,13 +38,26 @@ def _or_model(model_id: str) -> OpenRouterModel:
 # Underscore prefix avoids clashing with the `agent` package name.
 _agent: Agent[BookingSession, str] = Agent(
     FallbackModel(
-        _or_model("google/gemini-2.5-flash-lite"),   # fastest + cheapest
-        _or_model("google/gemini-3.5-flash"),         # fallback — stronger quality
+        _or_model("deepseek/deepseek-v4-flash"),      # fastest + cheapest
+        _or_model("google/gemini-2.5-flash-lite"),    # fallback
         _or_model("anthropic/claude-haiku-4-5"),      # final — reliable tool calling
     ),
     deps_type=BookingSession,
     instructions=SYSTEM_PROMPT,
 )
+
+@_agent.instructions
+def runtime_context(ctx: RunContext[BookingSession]) -> str:
+    """Inject server-controlled runtime facts (date, timezone) so the model can
+    resolve relative phrases like 'this Thursday'. No user input is injected here —
+    caller-supplied fields stay in BookingSession deps and are read via tools."""
+    today = date.today()
+    return (
+        f"Today is {today.strftime('%A, %B %d, %Y')} ({today.isoformat()}). "
+        f"Studio timezone is America/Los_Angeles. "
+        f"When a caller says 'this Thursday' or 'next Monday', resolve it against today's date."
+    )
+
 
 # importlib avoids rebinding the `_agent` name in this module.
 importlib.import_module("agent.tools.calendar")

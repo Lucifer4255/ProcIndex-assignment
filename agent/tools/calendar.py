@@ -69,7 +69,18 @@ async def check_slot(
     date_value: str | None = None,
     time_value: str | None = None,
 ) -> str:
-    """Check class availability. Call with whatever info you have — date, time, class type all optional."""
+    """Check class slot availability at Solstice Pilates.
+
+    Call this IMMEDIATELY whenever the caller mentions availability, schedules, open spots,
+    or wants to book a class — even if you only have partial information. Do NOT ask for
+    missing details before calling; pass what you have and the tool returns what is available.
+    You can ask follow-up questions after seeing the results.
+
+    Args:
+        class_type: Class name — 'Reformer', 'Mat', or 'Tower'. Omit if the caller has not specified.
+        date_value: Date in YYYY-MM-DD format, e.g. '2026-05-29'. Omit if not yet known.
+        time_value: Time in any natural format — '6pm', '18:00', '9am', '9:30am'. Omit if not yet known.
+    """
     _merge_booking_fields(ctx.deps, class_type, date_value, time_value)
 
     client = get_calendar_client()
@@ -135,7 +146,14 @@ async def check_slot(
 
 @_core._agent.tool
 async def book_class(ctx: RunContext[BookingSession]) -> str:
-    """Book the caller into the selected class slot using session details."""
+    """Confirm and complete a class booking for the caller.
+
+    Call this only after: (1) the caller has confirmed they want a specific slot,
+    AND (2) you have collected their full name and phone number.
+    All required details (class type, date, time, name, phone) must be in the session
+    before calling — the tool returns an error message if anything is missing.
+    Never call this speculatively; always confirm intent and collect name/phone first.
+    """
     missing = ctx.deps.missing_for_booking()
     if missing:
         return f"Still need: {', '.join(missing)} before I can complete the booking."
@@ -178,7 +196,16 @@ async def reschedule(
     new_date: str,
     new_time: str,
 ) -> str:
-    """Move an existing booking to a new class date and time."""
+    """Move the caller's existing booking to a different date and time.
+
+    Call this when the caller wants to reschedule or change their existing booking.
+    Requires the caller's phone number to be in the session (collect it first if missing).
+    The tool looks up their current booking by phone and moves it to the new slot.
+
+    Args:
+        new_date: The new date in YYYY-MM-DD format, e.g. '2026-06-03'.
+        new_time: The new time in any natural format — '6pm', '18:00', '9am'.
+    """
     if not ctx.deps.caller_phone:
         return "I need the caller phone number to find their existing booking."
 
@@ -231,7 +258,17 @@ async def cancel_booking(
     date_value: str | None = None,
     time_value: str | None = None,
 ) -> str:
-    """Cancel the caller's booking, optionally narrowed by date and time."""
+    """Cancel the caller's existing class booking.
+
+    Call this when the caller wants to cancel or remove a booking.
+    Requires the caller's phone number to be in the session (collect it first if missing).
+    If date and time are provided, cancels that specific slot. Otherwise finds their
+    next upcoming booking automatically.
+
+    Args:
+        date_value: Date of the booking to cancel in YYYY-MM-DD format. Omit to auto-find.
+        time_value: Time of the booking to cancel, e.g. '6pm'. Omit to auto-find.
+    """
     if not ctx.deps.caller_phone:
         return "I need the caller phone number to find their booking."
 
