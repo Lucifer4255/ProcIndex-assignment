@@ -16,6 +16,15 @@ import os
 import sys
 
 from dotenv import load_dotenv
+
+load_dotenv()
+
+# Import agent tool modules after dotenv so settings resolve correctly.
+# Docstrings from these functions are used as Vapi tool descriptions — single source of truth.
+import agent.tools.calendar as _agent_cal
+import agent.tools.escalate as _agent_escalate
+import agent.tools.sheets as _agent_sheets
+
 from vapi import AsyncVapi
 from vapi.types import OpenAiFunction, OpenAiFunctionParameters, Server
 from vapi.types.create_assistant_dto_model import CreateAssistantDtoModel_Openai
@@ -24,8 +33,6 @@ from vapi.types.open_ai_model_tools_item import OpenAiModelToolsItem_Function, O
 from vapi.types.create_transfer_call_tool_dto_destinations_item import CreateTransferCallToolDtoDestinationsItem_Number
 from vapi.phone_numbers.types.create_phone_numbers_request import CreatePhoneNumbersRequest_Twilio
 from vapi.phone_numbers.types.update_phone_numbers_request_body import UpdatePhoneNumbersRequestBody_Twilio
-
-load_dotenv()
 
 _SYSTEM_PROMPT = """
 IDENTITY
@@ -41,15 +48,17 @@ STUDIO CONTEXT
 Classes: Reformer drop-in thirty-five dollars, Mat drop-in twenty-five dollars, Tower drop-in forty dollars. Hours: Monday through Saturday six a.m. to eight p.m., Sunday eight a.m. to two p.m. Drop-ins are welcome when space is available.
 
 WORKFLOW
-When the caller uses a relative date phrase like "this Saturday", "next Monday", or "this week", call get_current_date first to resolve the exact date before calling check_slot.
+FIRST — before anything else — check what kind of request this is:
 
-For availability or scheduling, call check_slot right away with whatever the caller has given you. For a booking, collect class type, date, time, name, phone — but reuse name and phone from session context if already known. Call book_class once the caller confirms a slot and you have name and phone.
+If the caller mentions a birthday party, private session, group event, or booking for multiple people: this is NOT a regular class booking. Tell them a manager will reach out to handle all the details. Then ask: (1) their name — wait for the answer, (2) their callback phone number — wait for the answer. Do NOT ask for date, time, class type, or group size. Only after you have BOTH name and phone, call log_call with reason group_booking, priority high, callback_required true. Stop there.
 
-When the caller wants to reschedule or cancel, get their phone and call lookup_existing_bookings first, before asking anything else. Then use reschedule to move a booking or cancel_booking to remove one.
+If the caller has a billing dispute, refund, injury, instructor complaint, or wants to cancel a membership: acknowledge calmly, never promise outcomes. Ask for their name and callback number, call escalate_to_human, then call transferCall to connect them to a manager.
 
-For group bookings, private sessions, or birthday parties, explain a manager will follow up, collect name and callback phone, then call log_call with reason group_booking, priority high, callback_required true.
-
-For billing, refunds, injuries, instructor complaints, or membership cancellations: acknowledge calmly and never promise refunds or outcomes. Always ask for the caller's name AND a callback number explicitly — even if you think you already have them — before calling escalate_to_human. Once you have both, call escalate_to_human to log it, then immediately call transferCall to connect the caller to a manager.
+For regular single drop-in class requests only:
+- When the caller uses a relative date like "this Saturday" or "next Monday", call get_current_date first.
+- For availability or scheduling, call check_slot right away with whatever info you have.
+- For a booking, collect class type, date, time, name, phone. Call book_class once the caller confirms a slot and you have name and phone.
+- When the caller wants to reschedule or cancel, get their phone and call lookup_existing_bookings first, then use reschedule or cancel_booking.
 """.strip()
 
 
@@ -84,6 +93,12 @@ def _transfer_tool() -> OpenAiModelToolsItem_TransferCall:
     return OpenAiModelToolsItem_TransferCall(destinations=[destination])
 
 
+def _doc(fn) -> str:
+    """Extract the first paragraph of a function's docstring for use as a tool description."""
+    raw = (fn.__doc__ or "").strip()
+    return raw.split("\n\n")[0].replace("\n    ", " ").strip()
+
+
 def _build_tools(webhook_url: str) -> list[OpenAiModelToolsItem_Function | OpenAiModelToolsItem_TransferCall]:
     url = webhook_url
     s = {"type": "string"}
@@ -97,7 +112,7 @@ def _build_tools(webhook_url: str) -> list[OpenAiModelToolsItem_Function | OpenA
         ),
         _fn_tool(
             "check_slot",
-            "Check class slot availability. Call immediately when the caller asks about schedule, availability, or wants to book — even with partial info.",
+            _doc(_agent_cal.check_slot),
             {
                 "class_type": {"type": "string", "enum": ["Reformer", "Mat", "Tower"], "description": "Class name. Omit if not specified."},
                 "date_value": {**s, "description": "Date in YYYY-MM-DD. Omit if unknown."},
@@ -107,14 +122,14 @@ def _build_tools(webhook_url: str) -> list[OpenAiModelToolsItem_Function | OpenA
         ),
         _fn_tool(
             "lookup_existing_bookings",
-            "Fetch all upcoming bookings for a caller. Call this FIRST when they want to reschedule, cancel, or ask about their booking.",
+            _doc(_agent_cal.lookup_existing_bookings),
             {"caller_phone": {**s, "description": "Caller's phone number. REQUIRED."}},
             required=["caller_phone"],
             server_url=url,
         ),
         _fn_tool(
             "book_class",
-            "Complete a class booking. Call only after the caller confirmed a specific slot AND you have their name and phone.",
+            _doc(_agent_cal.book_class),
             {
                 "class_type": {"type": "string", "enum": ["Reformer", "Mat", "Tower"]},
                 "date_value": {**s, "description": "Date in YYYY-MM-DD."},
@@ -127,7 +142,7 @@ def _build_tools(webhook_url: str) -> list[OpenAiModelToolsItem_Function | OpenA
         ),
         _fn_tool(
             "reschedule",
-            "Move an existing booking to a new date/time. Requires new_date and new_time from the caller. Do NOT call check_slot for reschedule.",
+            _doc(_agent_cal.reschedule),
             {
                 "new_date": {**s, "description": "Date to move TO in YYYY-MM-DD. REQUIRED."},
                 "new_time": {**s, "description": "Time to move TO, e.g. '6pm'. REQUIRED."},
@@ -142,7 +157,7 @@ def _build_tools(webhook_url: str) -> list[OpenAiModelToolsItem_Function | OpenA
         ),
         _fn_tool(
             "cancel_booking",
-            "Cancel an existing booking. Requires caller phone. Date/time optional — auto-finds if omitted.",
+            _doc(_agent_cal.cancel_booking),
             {
                 "caller_phone": {**s, "description": "Caller's phone. REQUIRED."},
                 "date_value": {**s, "description": "Date of booking to cancel. Omit to auto-find."},
@@ -154,13 +169,13 @@ def _build_tools(webhook_url: str) -> list[OpenAiModelToolsItem_Function | OpenA
         ),
         _fn_tool(
             "get_caller_history",
-            "Look up a returning caller's history in the Contacts sheet. Call early when you have their phone to greet them by name.",
+            _doc(_agent_sheets.get_caller_history),
             {"phone": {**s, "description": "Caller phone. Omit to use session phone."}},
             server_url=url,
         ),
         _fn_tool(
             "log_call",
-            "Log this call or a follow-up request. Use for bookings, inquiries, group parties, waitlist, feedback. NOT for billing/refunds — use escalate_to_human instead.",
+            _doc(_agent_sheets.log_call),
             {
                 "reason": {"type": "string", "enum": ["booking", "reschedule", "cancel", "inquiry", "follow_up", "missed_callback", "group_booking", "membership_inquiry", "waitlist", "feedback", "lost_and_found", "late_arrival", "complaint"]},
                 "summary": {**s, "description": "One or two sentence summary of the call."},
@@ -175,7 +190,7 @@ def _build_tools(webhook_url: str) -> list[OpenAiModelToolsItem_Function | OpenA
         ),
         _fn_tool(
             "escalate_to_human",
-            "Escalate billing, refund, injury, instructor complaint, membership cancellation, or abuse to a manager. You MUST ask for the caller's name AND callback number before calling this tool — even if you think you already have them.",
+            _doc(_agent_escalate.escalate_to_human),
             {
                 "reason": {"type": "string", "enum": ["billing", "refund", "injury", "instructor_complaint", "membership_cancel", "abuse", "other"]},
                 "callback_number": {**s, "description": "Best number for callback. Omit if in session."},

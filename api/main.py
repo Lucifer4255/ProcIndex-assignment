@@ -1,6 +1,5 @@
 """FastAPI app — lifespan, CORS, Logfire, chat route, static UI."""
 
-import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -18,9 +17,6 @@ from integrations.calendar_context import set_calendar_client
 from integrations.google_calendar import GoogleCalendarClient
 from integrations.google_sheets import GoogleSheetsClient
 from integrations.sheets_context import set_sheets_client
-from scripts.vapi_setup import main as vapi_setup_main
-
-logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -44,10 +40,6 @@ async def lifespan(app: FastAPI):
             sheet_id=settings.google_sheet_id,
         )
         set_sheets_client(app.state.sheets)
-    try:
-        await vapi_setup_main()
-    except Exception:
-        logger.exception("Vapi setup failed — server will continue without re-syncing assistant")
     yield
     await redis_client.aclose()
 

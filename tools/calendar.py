@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+_STUDIO_TZ = ZoneInfo("America/Los_Angeles")
 
 from agent.models import BookingSession
 from integrations.calendar_context import get_calendar_client
@@ -14,6 +17,12 @@ from integrations.google_calendar import (
     studio_datetime,
 )
 from integrations.sheets_context import get_sheets_client
+
+
+def _is_upcoming(slot) -> bool:
+    """Return True if the slot hasn't started yet (studio local time)."""
+    now = datetime.now(tz=_STUDIO_TZ)
+    return slot.start > now
 
 
 def _merge_booking_fields(
@@ -139,7 +148,7 @@ async def check_slot(
         )
         if not all_slots:
             day_slots = await client.list_slots_for_day(day)
-            available = [s for s in day_slots if not s.is_full]
+            available = [s for s in day_slots if not s.is_full and _is_upcoming(s)]
             if available:
                 alt_text = ". ".join(_annotate_slot(s, session) for s in available[:4])
                 return f"No classes at that time. Available that day: {alt_text}."
@@ -147,7 +156,7 @@ async def check_slot(
         lines = ". ".join(_annotate_slot(s, session) for s in all_slots)
         if all(s.is_full for s in all_slots):
             day_slots = await client.list_slots_for_day(day)
-            available = [s for s in day_slots if not s.is_full]
+            available = [s for s in day_slots if not s.is_full and _is_upcoming(s)]
             if available:
                 alt_text = ". ".join(_annotate_slot(s, session) for s in available[:4])
                 return f"At that time: {lines}. Other options that day: {alt_text}."
@@ -164,7 +173,7 @@ async def check_slot(
             return f"{_annotate_slot(slot, session)}. Want me to book you in?"
         day = slot.start.date()
         day_slots = await client.list_slots_for_day(day, slot.class_type)
-        alternatives = [s for s in day_slots if not s.is_full and s.event_id != slot.event_id]
+        alternatives = [s for s in day_slots if not s.is_full and _is_upcoming(s) and s.event_id != slot.event_id]
         if alternatives:
             alt_text = ". ".join(_annotate_slot(s, session) for s in alternatives[:3])
             return f"{_annotate_slot(slot, session)}. Other {slot.class_type} options that day: {alt_text}."
@@ -176,9 +185,9 @@ async def check_slot(
         except ValueError:
             return "I need a valid date to check availability."
         day_slots = await client.list_slots_for_day(day)
-        available = [s for s in day_slots if not s.is_full]
+        available = [s for s in day_slots if not s.is_full and _is_upcoming(s)]
         if not available:
-            return "No open classes that day."
+            return "No open classes remaining today." if day == date.today() else "No open classes that day."
         alt_text = ". ".join(_annotate_slot(s, session) for s in available[:4])
         return f"Open classes that day: {alt_text}."
 
