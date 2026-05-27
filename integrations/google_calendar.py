@@ -326,6 +326,19 @@ class GoogleCalendarClient:
                     return slot
         return None
 
+    async def list_bookings_by_phone(
+        self,
+        phone: str,
+        start: datetime,
+        end: datetime,
+    ) -> list[ClassSlot]:
+        target = normalize_phone(phone)
+        matches: list[ClassSlot] = []
+        for slot in await self.list_class_slots(start, end):
+            if any(normalize_phone(b.phone) == target for b in slot.booked):
+                matches.append(slot)
+        return matches
+
     async def save_slot_bookings(self, slot: ClassSlot, booked: list[ClassBooking]) -> ClassSlot:
         description = build_description(slot.class_type, slot.capacity, booked)
         event = await self.patch_event(

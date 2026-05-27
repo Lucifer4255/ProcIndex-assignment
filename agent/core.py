@@ -38,9 +38,9 @@ def _or_model(model_id: str) -> OpenRouterModel:
 # Underscore prefix avoids clashing with the `agent` package name.
 _agent: Agent[BookingSession, str] = Agent(
     FallbackModel(
+        _or_model("deepseek/deepseek-v3.2"),    # fallback
         _or_model("deepseek/deepseek-v4-flash"),      # fastest + cheapest
-        _or_model("google/gemini-2.5-flash-lite"),    # fallback
-        _or_model("anthropic/claude-haiku-4-5"),      # final — reliable tool calling
+        _or_model("z-ai/glm-4.5-air"),      # final — reliable tool calling
     ),
     deps_type=BookingSession,
     instructions=SYSTEM_PROMPT,

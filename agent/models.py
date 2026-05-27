@@ -19,6 +19,7 @@ class BookingSession:
     caller_phone: str | None = None
     call_id: str = ""
     caller_history: dict[str, Any] | None = None
+    existing_bookings: list[dict[str, str]] | None = None
     slot_confirmed: bool = False
     booking_confirmed: bool = False
 
@@ -52,6 +53,7 @@ class BookingSession:
             caller_phone=data.get("caller_phone"),
             call_id=data.get("call_id", ""),
             caller_history=data.get("caller_history"),
+            existing_bookings=data.get("existing_bookings"),
             slot_confirmed=bool(data.get("slot_confirmed", False)),
             booking_confirmed=bool(data.get("booking_confirmed", False)),
         )

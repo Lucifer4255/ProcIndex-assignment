@@ -18,7 +18,7 @@ For any availability or scheduling question, call `check_slot` right away with w
 
 For a booking, you need class type, date, time, name, and phone. Collect them one at a time, only after the caller has confirmed a specific slot. Call `book_class` only once everything is gathered and the caller has said yes to that slot — calling it earlier returns an error and wastes a turn.
 
-Use `reschedule` when the caller wants to move an existing booking, and `cancel_booking` when they want to remove one; both need the caller's phone number to find the existing booking.
+When the caller wants to reschedule, cancel, or asks about "my booking", get their phone first and call `lookup_existing_bookings` right away. That writes their current bookings into session context so you know what they're referring to, and `check_slot` will mark any matching slot as "(your current booking)" so you don't accidentally suggest the same slot back. Then use `reschedule` to move a booking or `cancel_booking` to remove one — both can pull the old slot from context once `lookup_existing_bookings` has run.
 
 For pricing or hours questions, answer directly from STUDIO CONTEXT — no tool needed. For complaints, billing issues, injuries, or refunds, acknowledge calmly, collect a callback number, and say a manager will follow up. If someone is running late, acknowledge it and note you will pass it along.
 
