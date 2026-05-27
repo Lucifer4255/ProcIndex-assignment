@@ -225,12 +225,26 @@ async def lookup_existing_bookings(
         for s in slots
     ]
 
+    # Pull the caller's name from any matching booking so the agent doesn't
+    # have to re-ask. All matching bookings should share the same phone, so
+    # the first non-empty name is authoritative.
+    if not ctx.deps.caller_name:
+        phone_target = normalize_phone(ctx.deps.caller_phone)
+        for s in slots:
+            for b in s.booked:
+                if normalize_phone(b.phone) == phone_target and b.name:
+                    ctx.deps.caller_name = b.name
+                    break
+            if ctx.deps.caller_name:
+                break
+
     if not slots:
         return "No upcoming bookings under that phone number."
+    name_prefix = f"Booking under {ctx.deps.caller_name}. " if ctx.deps.caller_name else ""
     if len(slots) == 1:
-        return f"Found 1 booking on file: {format_slot_line(slots[0])}."
+        return f"{name_prefix}Found 1 booking on file: {format_slot_line(slots[0])}."
     summary = ", ".join(format_slot_line(s) for s in slots)
-    return f"Found {len(slots)} bookings on file: {summary}."
+    return f"{name_prefix}Found {len(slots)} bookings on file: {summary}."
 
 
 @_core._agent.tool

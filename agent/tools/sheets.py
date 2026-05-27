@@ -17,6 +17,7 @@ CallReason = Literal[
     "cancel",
     "inquiry",
     "follow_up",
+    "missed_callback",
     "group_booking",
     "membership_inquiry",
     "waitlist",
@@ -84,6 +85,8 @@ async def get_caller_history(
         "last_call_reason": row.get("last_call_reason") or "",
         "last_call_summary": row.get("last_call_summary") or "",
         "priority_flag": row.get("priority_flag") or "normal",
+        "callback_required": row.get("callback_required") or "FALSE",
+        "notes": row.get("notes") or "",
     }
     ctx.deps.caller_history = history
 
@@ -110,14 +113,17 @@ async def log_call(
 ) -> str:
     """Log this call or a follow-up request to the Contacts sheet.
 
-    Use for completed bookings, inquiries, or non-urgent follow-ups (group parties,
-    membership questions, waitlist, feedback). Do NOT use for billing/refund/injury —
-    use escalate_to_human instead.
+    Use for completed bookings, inquiries, or follow-ups (group parties,
+    membership questions, waitlist, feedback). If a caller says a manager never
+    called back about a birthday/group/private-session inquiry, use reason
+    missed_callback, priority urgent, and callback_required true. Do NOT use for
+    billing/refund/injury — use escalate_to_human instead.
 
     Args:
-        reason: Why the caller reached out — booking, inquiry, group_booking, etc.
+        reason: Why the caller reached out — booking, inquiry, group_booking,
+            missed_callback, etc.
         summary: One or two sentence summary of the conversation or request.
-        priority: normal for handled calls, high for manager follow-up that is not urgent.
+        priority: normal for handled calls, high for new manager follow-up, urgent for missed callbacks.
         callback_required: True when a manager should call the caller back.
         notes: Optional extra detail (injury notes, party size, etc.).
         phone: Caller phone if not already in session.
@@ -130,6 +136,10 @@ async def log_call(
     if name:
         ctx.deps.caller_name = name.strip()
     ctx.deps.caller_phone = phone_n
+
+    if reason == "missed_callback":
+        priority = "urgent"
+        callback_required = True
 
     fields: dict[str, str] = {
         "last_call_reason": reason,
