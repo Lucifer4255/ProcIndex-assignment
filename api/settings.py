@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     google_calendar_id: str
     google_sheet_id: str | None = None
 
+    # Vapi (Phase 2)
+    vapi_api_key: str | None = None
+    vapi_llm_provider: str = "openai"
+    vapi_llm_model: str = "gpt-4o-mini"
+    vapi_phone_number_id: str | None = None
+    vapi_assistant_id: str | None = None
+    base_url: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -14,6 +14,7 @@ dependencies = [
     "logfire",
     "python-dotenv",
     "httpx",
+    "vapi-server-sdk>=1.11.1",
 ]
 
 [project.optional-dependencies]
