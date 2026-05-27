@@ -61,6 +61,8 @@ def runtime_context(ctx: RunContext[BookingSession]) -> str:
 
 # importlib avoids rebinding the `_agent` name in this module.
 importlib.import_module("agent.tools.calendar")
+importlib.import_module("agent.tools.sheets")
+importlib.import_module("agent.tools.escalate")
 
 
 def get_agent() -> Agent[BookingSession, str]:

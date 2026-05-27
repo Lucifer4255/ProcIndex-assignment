@@ -118,7 +118,17 @@ A running list of design decisions we've made and ideas worth considering if thi
 
 ---
 
-## 10. Description as source of truth
+## 10. Sheets header-row detection is permissive by convention, not by code
+
+**Current:** `GoogleSheetsClient.get_row_by_phone` only recognises a header row when `rows[0][0].lower() == "phone"`. Any other label ("Phone Number", "Caller Phone", blank A1, etc.) causes the header row to be treated as data.
+
+**Tradeoff:** Keeps the code simple and assumes whoever provisions the sheet uses the documented column name. A more defensive parser would detect headers by row-number heuristics or column-shape inspection, but that adds complexity for a one-time setup contract.
+
+**When to revisit:** if anyone other than the founding team starts provisioning sheets, switch to a small `COLUMNS`-aware header inspector or move to a typed schema (e.g. gspread + pydantic row model).
+
+---
+
+## 11. Description as source of truth
 
 **Current:** Booking data lives in the Calendar event description; Redis only holds in-flight session state. If Redis dies, no bookings are lost.
 

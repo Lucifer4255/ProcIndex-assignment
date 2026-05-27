@@ -15,6 +15,7 @@ from integrations.google_calendar import (
     parse_time_string,
     studio_datetime,
 )
+from integrations.sheets_context import get_sheets_client
 
 
 def _merge_booking_fields(
@@ -76,6 +77,37 @@ async def _resolve_target_slot(session: BookingSession):
             f"I don't see a {session.class_type} class at that date and time on the schedule.",
         )
     return slot, None
+
+
+async def _log_calendar_success(
+    session: BookingSession,
+    reason: str,
+    summary: str,
+    class_booked: str | None = None,
+) -> None:
+    """Best-effort caller log after Calendar has been updated.
+
+    Swallows any exception — Calendar write already succeeded, so failure to log
+    must NOT surface as a tool error (would cause the caller to retry → double-book).
+    Does NOT touch priority_flag or callback_required, so prior urgent escalations
+    on the same caller's row remain intact.
+    """
+    if not session.caller_phone:
+        return
+
+    try:
+        client = get_sheets_client()
+        fields: dict[str, str] = {
+            "last_call_reason": reason,
+            "last_call_summary": summary,
+        }
+        if session.caller_name:
+            fields["name"] = session.caller_name
+        if class_booked:
+            fields["last_class_booked"] = class_booked
+        await client.upsert_row(session.caller_phone, fields)
+    except Exception:
+        return
 
 
 @_core._agent.tool
@@ -283,6 +315,16 @@ async def book_class(
 
     ctx.deps.slot_confirmed = True
     ctx.deps.booking_confirmed = True
+    booked_summary = (
+        f"{updated.class_type} {updated.start.strftime('%H:%M')} "
+        f"{updated.start.date().isoformat()}"
+    )
+    await _log_calendar_success(
+        ctx.deps,
+        "booking",
+        f"Booked {ctx.deps.caller_name} into {format_slot_line(updated)}.",
+        class_booked=booked_summary,
+    )
     return (
         f"Booked {ctx.deps.caller_name} into {format_slot_line(updated)}. "
         f"Confirmation on file: {normalize_phone(ctx.deps.caller_phone)}."
@@ -428,6 +470,16 @@ async def reschedule(
     ctx.deps.preferred_time = f"{new_hour:02d}:{new_minute:02d}"
     ctx.deps.booking_confirmed = True
     ctx.deps.slot_confirmed = True
+    new_summary = (
+        f"{updated.class_type} {updated.start.strftime('%H:%M')} "
+        f"{updated.start.date().isoformat()}"
+    )
+    await _log_calendar_success(
+        ctx.deps,
+        "reschedule",
+        f"Moved booking from {format_slot_line(existing)} to {format_slot_line(updated)}.",
+        class_booked=new_summary,
+    )
     return f"Moved booking from {format_slot_line(existing)} to {format_slot_line(updated)}."
 
 
@@ -478,6 +530,11 @@ async def cancel_booking(
             return "I don't see a booking for that phone number in that class."
         await client.remove_booking(slot, phone_n)
         ctx.deps.booking_confirmed = False
+        await _log_calendar_success(
+            ctx.deps,
+            "cancel",
+            f"Cancelled booking for {format_slot_line(slot)}.",
+        )
         return f"Cancelled the booking for {format_slot_line(slot)}."
 
     # Use existing_bookings context if available
@@ -490,6 +547,11 @@ async def cancel_booking(
         if match is not None:
             await client.remove_booking(match, phone_n)
             ctx.deps.booking_confirmed = False
+            await _log_calendar_success(
+                ctx.deps,
+                "cancel",
+                f"Cancelled booking for {format_slot_line(match)}.",
+            )
             return f"Cancelled the booking for {format_slot_line(match)}."
 
     if ctx.deps.existing_bookings and len(ctx.deps.existing_bookings) > 1:
@@ -508,4 +570,9 @@ async def cancel_booking(
 
     await client.remove_booking(current, phone_n)
     ctx.deps.booking_confirmed = False
+    await _log_calendar_success(
+        ctx.deps,
+        "cancel",
+        f"Cancelled booking for {format_slot_line(current)}.",
+    )
     return f"Cancelled the booking for {format_slot_line(current)}."

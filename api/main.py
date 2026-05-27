@@ -14,6 +14,8 @@ from api.routes.chat import router as chat_router
 from api.settings import get_settings
 from integrations.calendar_context import set_calendar_client
 from integrations.google_calendar import GoogleCalendarClient
+from integrations.google_sheets import GoogleSheetsClient
+from integrations.sheets_context import set_sheets_client
 
 load_dotenv()
 
@@ -31,6 +33,12 @@ async def lifespan(app: FastAPI):
         calendar_id=settings.google_calendar_id,
     )
     set_calendar_client(app.state.calendar)
+    if settings.google_sheet_id:
+        app.state.sheets = GoogleSheetsClient(
+            service_account_json=settings.google_service_account_json,
+            sheet_id=settings.google_sheet_id,
+        )
+        set_sheets_client(app.state.sheets)
     yield
     await redis_client.aclose()
 
