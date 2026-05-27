@@ -59,6 +59,39 @@ def runtime_context(ctx: RunContext[BookingSession]) -> str:
     )
 
 
+@_agent.instructions
+def session_snapshot(ctx: RunContext[BookingSession]) -> str:
+    """Surface what's already been collected about the caller so the model
+    can reuse fields (per the WORKFLOW reuse rule for book_class) without
+    introspecting deps via a tool. Only includes non-empty fields."""
+    s = ctx.deps
+    known: list[str] = []
+    if s.caller_name:
+        known.append(f"name={s.caller_name}")
+    if s.caller_phone:
+        known.append(f"phone={s.caller_phone}")
+    if s.class_type:
+        known.append(f"class_type={s.class_type}")
+    if s.preferred_date:
+        known.append(f"date={s.preferred_date}")
+    if s.preferred_time:
+        known.append(f"time={s.preferred_time}")
+    if s.existing_bookings:
+        bookings = "; ".join(
+            f"{b.get('class_type')} {b.get('time')} on {b.get('date')}"
+            for b in s.existing_bookings
+        )
+        known.append(f"existing_bookings=[{bookings}]")
+    if not known:
+        return ""
+    return (
+        "Known about this caller from earlier in the conversation: "
+        + ", ".join(known)
+        + ". Reuse these fields when calling tools (for book_class) without re-asking; "
+        + "for group_booking and escalations, still confirm name+phone with the caller."
+    )
+
+
 # importlib avoids rebinding the `_agent` name in this module.
 importlib.import_module("agent.tools.calendar")
 importlib.import_module("agent.tools.sheets")
