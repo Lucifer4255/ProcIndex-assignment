@@ -402,6 +402,18 @@ def normalize_phone(phone: str) -> str:
     return phone.strip()
 
 
+def is_valid_phone(phone: str) -> bool:
+    """True if the input contains a US-shaped phone (10 digits, or 11 starting with 1)."""
+    if not phone:
+        return False
+    digits = re.sub(r"\D", "", phone)
+    if len(digits) == 10:
+        return True
+    if len(digits) == 11 and digits.startswith("1"):
+        return True
+    return False
+
+
 def parse_time_string(value: str) -> tuple[int, int] | None:
     raw = value.strip().lower().replace(" ", "")
     if not raw:

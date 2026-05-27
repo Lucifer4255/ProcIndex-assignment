@@ -11,6 +11,7 @@ from agent.models import BookingSession
 from integrations.calendar_context import get_calendar_client
 from integrations.google_calendar import (
     format_slot_line,
+    is_valid_phone,
     normalize_phone,
     parse_time_string,
     studio_datetime,
@@ -156,6 +157,15 @@ async def check_slot(
                 return f"No classes at that time. Available that day: {alt_text}."
             return "No classes available that day."
         lines = ". ".join(_annotate_slot(s, ctx.deps) for s in all_slots)
+        # If everything at this time is full, append real same-day alternatives
+        # so the model has something genuine to relay instead of inventing slots.
+        if all(s.is_full for s in all_slots):
+            day_slots = await client.list_slots_for_day(day)
+            available = [s for s in day_slots if not s.is_full]
+            if available:
+                alt_text = ". ".join(_annotate_slot(s, ctx.deps) for s in available[:4])
+                return f"At that time: {lines}. Other options that day: {alt_text}."
+            return f"At that time: {lines}. No other open classes that day."
         return f"At that time: {lines}."
 
     # If we have all three, look up the specific slot.
@@ -283,6 +293,10 @@ async def book_class(
     missing = ctx.deps.missing_for_booking()
     if missing:
         return f"Still need: {', '.join(missing)} before I can complete the booking."
+
+    if not is_valid_phone(ctx.deps.caller_phone or ""):
+        ctx.deps.caller_phone = None
+        return "That phone number doesn't look right — I need 10 digits. Could you read it back?"
 
     slot, error = await _resolve_target_slot(ctx.deps)
     if error:
