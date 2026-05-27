@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from agent.storage import SessionStore
 from api.routes.chat import router as chat_router
-from api.routes.vapi import router as vapi_router
+from vapi_adapter.router import router as vapi_router
 from api.settings import get_settings
 from integrations.calendar_context import set_calendar_client
 from integrations.google_calendar import GoogleCalendarClient
