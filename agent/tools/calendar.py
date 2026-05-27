@@ -121,6 +121,88 @@ async def _log_calendar_success(
         return
 
 
+# ---------------------------------------------------------------------------
+# check_slot
+# ---------------------------------------------------------------------------
+
+async def check_slot_impl(
+    session: BookingSession,
+    class_type: str | None = None,
+    date_value: str | None = None,
+    time_value: str | None = None,
+) -> str:
+    _merge_booking_fields(session, class_type, date_value, time_value)
+
+    client = get_calendar_client()
+
+    # If we have date + time but no class type, show all classes at that time.
+    if session.preferred_date and session.preferred_time and not session.class_type:
+        try:
+            day = date.fromisoformat(session.preferred_date)
+        except ValueError:
+            return "I need a valid date to check availability."
+        parsed = parse_time_string(session.preferred_time)
+        if parsed is None:
+            return "I need a valid time to check availability."
+        hour, minute = parsed
+        target_dt = studio_datetime(day, hour, minute)
+        all_slots = await client.list_class_slots(
+            target_dt, target_dt + timedelta(minutes=1)
+        )
+        if not all_slots:
+            # Nothing at that exact time — show what's available that day
+            day_slots = await client.list_slots_for_day(day)
+            available = [s for s in day_slots if not s.is_full]
+            if available:
+                alt_text = ". ".join(_annotate_slot(s, session) for s in available[:4])
+                return f"No classes at that time. Available that day: {alt_text}."
+            return "No classes available that day."
+        lines = ". ".join(_annotate_slot(s, session) for s in all_slots)
+        # If everything at this time is full, append real same-day alternatives
+        # so the model has something genuine to relay instead of inventing slots.
+        if all(s.is_full for s in all_slots):
+            day_slots = await client.list_slots_for_day(day)
+            available = [s for s in day_slots if not s.is_full]
+            if available:
+                alt_text = ". ".join(_annotate_slot(s, session) for s in available[:4])
+                return f"At that time: {lines}. Other options that day: {alt_text}."
+            return f"At that time: {lines}. No other open classes that day."
+        return f"At that time: {lines}."
+
+    # If we have all three, look up the specific slot.
+    if session.preferred_date and session.preferred_time and session.class_type:
+        slot, error = await _resolve_target_slot(session)
+        if error:
+            return error
+        assert slot is not None
+        if not slot.is_full:
+            session.slot_confirmed = True
+            return f"{_annotate_slot(slot, session)}. Want me to book you in?"
+        # Full — show alternatives same class type same day
+        day = slot.start.date()
+        day_slots = await client.list_slots_for_day(day, slot.class_type)
+        alternatives = [s for s in day_slots if not s.is_full and s.event_id != slot.event_id]
+        if alternatives:
+            alt_text = ". ".join(_annotate_slot(s, session) for s in alternatives[:3])
+            return f"{_annotate_slot(slot, session)}. Other {slot.class_type} options that day: {alt_text}."
+        return f"{_annotate_slot(slot, session)}. No other open {slot.class_type} classes that day."
+
+    # If we only have a date, show all available slots that day.
+    if session.preferred_date:
+        try:
+            day = date.fromisoformat(session.preferred_date)
+        except ValueError:
+            return "I need a valid date to check availability."
+        day_slots = await client.list_slots_for_day(day)
+        available = [s for s in day_slots if not s.is_full]
+        if not available:
+            return "No open classes that day."
+        alt_text = ". ".join(_annotate_slot(s, session) for s in available[:4])
+        return f"Open classes that day: {alt_text}."
+
+    return "What date and time are you looking at?"
+
+
 @_core._agent.tool
 async def check_slot(
     ctx: RunContext[BookingSession],
@@ -140,76 +222,54 @@ async def check_slot(
         date_value: Date in YYYY-MM-DD format, e.g. '2026-05-29'. Omit if not yet known.
         time_value: Time in any natural format — '6pm', '18:00', '9am', '9:30am'. Omit if not yet known.
     """
-    _merge_booking_fields(ctx.deps, class_type, date_value, time_value)
+    return await check_slot_impl(ctx.deps, class_type, date_value, time_value)
 
+
+# ---------------------------------------------------------------------------
+# lookup_existing_bookings
+# ---------------------------------------------------------------------------
+
+async def lookup_existing_bookings_impl(
+    session: BookingSession,
+    caller_phone: str,
+) -> str:
+    _merge_booking_fields(session, caller_phone=caller_phone)
     client = get_calendar_client()
+    today = date.today()
+    start = studio_datetime(today, 0)
+    end = studio_datetime(today + timedelta(days=60), 23, 59)
+    slots = await client.list_bookings_by_phone(session.caller_phone, start, end)
 
-    # If we have date + time but no class type, show all classes at that time.
-    if ctx.deps.preferred_date and ctx.deps.preferred_time and not ctx.deps.class_type:
-        try:
-            day = date.fromisoformat(ctx.deps.preferred_date)
-        except ValueError:
-            return "I need a valid date to check availability."
-        parsed = parse_time_string(ctx.deps.preferred_time)
-        if parsed is None:
-            return "I need a valid time to check availability."
-        hour, minute = parsed
-        target_dt = studio_datetime(day, hour, minute)
-        all_slots = await client.list_class_slots(
-            target_dt, target_dt + timedelta(minutes=1)
-        )
-        if not all_slots:
-            # Nothing at that exact time — show what's available that day
-            day_slots = await client.list_slots_for_day(day)
-            available = [s for s in day_slots if not s.is_full]
-            if available:
-                alt_text = ". ".join(_annotate_slot(s, ctx.deps) for s in available[:4])
-                return f"No classes at that time. Available that day: {alt_text}."
-            return "No classes available that day."
-        lines = ". ".join(_annotate_slot(s, ctx.deps) for s in all_slots)
-        # If everything at this time is full, append real same-day alternatives
-        # so the model has something genuine to relay instead of inventing slots.
-        if all(s.is_full for s in all_slots):
-            day_slots = await client.list_slots_for_day(day)
-            available = [s for s in day_slots if not s.is_full]
-            if available:
-                alt_text = ". ".join(_annotate_slot(s, ctx.deps) for s in available[:4])
-                return f"At that time: {lines}. Other options that day: {alt_text}."
-            return f"At that time: {lines}. No other open classes that day."
-        return f"At that time: {lines}."
+    session.existing_bookings = [
+        {
+            "class_type": s.class_type,
+            "date": s.start.date().isoformat(),
+            "time": f"{s.start.hour:02d}:{s.start.minute:02d}",
+            "event_id": s.event_id,
+        }
+        for s in slots
+    ]
 
-    # If we have all three, look up the specific slot.
-    if ctx.deps.preferred_date and ctx.deps.preferred_time and ctx.deps.class_type:
-        slot, error = await _resolve_target_slot(ctx.deps)
-        if error:
-            return error
-        assert slot is not None
-        if not slot.is_full:
-            ctx.deps.slot_confirmed = True
-            return f"{_annotate_slot(slot, ctx.deps)}. Want me to book you in?"
-        # Full — show alternatives same class type same day
-        day = slot.start.date()
-        day_slots = await client.list_slots_for_day(day, slot.class_type)
-        alternatives = [s for s in day_slots if not s.is_full and s.event_id != slot.event_id]
-        if alternatives:
-            alt_text = ". ".join(_annotate_slot(s, ctx.deps) for s in alternatives[:3])
-            return f"{_annotate_slot(slot, ctx.deps)}. Other {slot.class_type} options that day: {alt_text}."
-        return f"{_annotate_slot(slot, ctx.deps)}. No other open {slot.class_type} classes that day."
+    # Pull the caller's name from any matching booking so the agent doesn't
+    # have to re-ask. All matching bookings should share the same phone, so
+    # the first non-empty name is authoritative.
+    if not session.caller_name:
+        phone_target = normalize_phone(session.caller_phone)
+        for s in slots:
+            for b in s.booked:
+                if normalize_phone(b.phone) == phone_target and b.name:
+                    session.caller_name = b.name
+                    break
+            if session.caller_name:
+                break
 
-    # If we only have a date, show all available slots that day.
-    if ctx.deps.preferred_date:
-        try:
-            day = date.fromisoformat(ctx.deps.preferred_date)
-        except ValueError:
-            return "I need a valid date to check availability."
-        day_slots = await client.list_slots_for_day(day)
-        available = [s for s in day_slots if not s.is_full]
-        if not available:
-            return "No open classes that day."
-        alt_text = ". ".join(_annotate_slot(s, ctx.deps) for s in available[:4])
-        return f"Open classes that day: {alt_text}."
-
-    return "What date and time are you looking at?"
+    if not slots:
+        return "No upcoming bookings under that phone number."
+    name_prefix = f"Booking under {session.caller_name}. " if session.caller_name else ""
+    if len(slots) == 1:
+        return f"{name_prefix}Found 1 booking on file: {format_slot_line(slots[0])}."
+    summary = ", ".join(format_slot_line(s) for s in slots)
+    return f"{name_prefix}Found {len(slots)} bookings on file: {summary}."
 
 
 @_core._agent.tool
@@ -228,43 +288,96 @@ async def lookup_existing_bookings(
     Args:
         caller_phone: The caller's phone number — REQUIRED.
     """
-    _merge_booking_fields(ctx.deps, caller_phone=caller_phone)
+    return await lookup_existing_bookings_impl(ctx.deps, caller_phone)
+
+
+# ---------------------------------------------------------------------------
+# book_class
+# ---------------------------------------------------------------------------
+
+async def book_class_impl(
+    session: BookingSession,
+    class_type: str | None = None,
+    date_value: str | None = None,
+    time_value: str | None = None,
+    caller_name: str | None = None,
+    caller_phone: str | None = None,
+) -> str:
+    _merge_booking_fields(
+        session,
+        class_type=class_type,
+        date_value=date_value,
+        time_value=time_value,
+        caller_name=caller_name,
+        caller_phone=caller_phone,
+    )
+    missing = session.missing_for_booking()
+    if missing:
+        return f"Still need: {', '.join(missing)} before I can complete the booking."
+
+    if not is_valid_phone(session.caller_phone or ""):
+        session.caller_phone = None
+        return "That phone number doesn't look right — I need 10 digits. Could you read it back?"
+
+    slot, error = await _resolve_target_slot(session)
+    if error:
+        return error
+    assert slot is not None
+
+    if slot.is_full:
+        return (
+            f"That {slot.class_type} class is full. "
+            "Ask me to check another time first."
+        )
+
+    if not session.caller_name or not session.caller_phone:
+        return "I still need the caller name and phone number."
+
     client = get_calendar_client()
-    today = date.today()
-    start = studio_datetime(today, 0)
-    end = studio_datetime(today + timedelta(days=60), 23, 59)
-    slots = await client.list_bookings_by_phone(ctx.deps.caller_phone, start, end)
+    phone_n = normalize_phone(session.caller_phone)
 
-    ctx.deps.existing_bookings = [
-        {
-            "class_type": s.class_type,
-            "date": s.start.date().isoformat(),
-            "time": f"{s.start.hour:02d}:{s.start.minute:02d}",
-            "event_id": s.event_id,
-        }
-        for s in slots
-    ]
+    # Same slot duplicate
+    if any(normalize_phone(b.phone) == phone_n for b in slot.booked):
+        return f"You're already booked for {format_slot_line(slot)}."
 
-    # Pull the caller's name from any matching booking so the agent doesn't
-    # have to re-ask. All matching bookings should share the same phone, so
-    # the first non-empty name is authoritative.
-    if not ctx.deps.caller_name:
-        phone_target = normalize_phone(ctx.deps.caller_phone)
-        for s in slots:
-            for b in s.booked:
-                if normalize_phone(b.phone) == phone_target and b.name:
-                    ctx.deps.caller_name = b.name
-                    break
-            if ctx.deps.caller_name:
-                break
+    # Same-time double-booking across classes
+    siblings = await client.list_class_slots(slot.start, slot.start + timedelta(minutes=1))
+    conflict = next(
+        (
+            s for s in siblings
+            if s.event_id != slot.event_id
+            and any(normalize_phone(b.phone) == phone_n for b in s.booked)
+        ),
+        None,
+    )
+    if conflict is not None:
+        return f"You already have a booking at that time: {format_slot_line(conflict)}."
 
-    if not slots:
-        return "No upcoming bookings under that phone number."
-    name_prefix = f"Booking under {ctx.deps.caller_name}. " if ctx.deps.caller_name else ""
-    if len(slots) == 1:
-        return f"{name_prefix}Found 1 booking on file: {format_slot_line(slots[0])}."
-    summary = ", ".join(format_slot_line(s) for s in slots)
-    return f"{name_prefix}Found {len(slots)} bookings on file: {summary}."
+    try:
+        updated = await client.add_booking(
+            slot,
+            session.caller_name,
+            session.caller_phone,
+        )
+    except ValueError:
+        return f"That {slot.class_type} class just filled up. Want another time?"
+
+    session.slot_confirmed = True
+    session.booking_confirmed = True
+    booked_summary = (
+        f"{updated.class_type} {updated.start.strftime('%H:%M')} "
+        f"{updated.start.date().isoformat()}"
+    )
+    await _log_calendar_success(
+        session,
+        "booking",
+        f"Booked {session.caller_name} into {format_slot_line(updated)}.",
+        class_booked=booked_summary,
+    )
+    return (
+        f"Booked {session.caller_name} into {format_slot_line(updated)}. "
+        f"Confirmation on file: {normalize_phone(session.caller_phone)}."
+    )
 
 
 @_core._agent.tool
@@ -292,86 +405,15 @@ async def book_class(
         caller_name: The caller's name as they gave it, e.g. 'Sara'. REQUIRED — always pass.
         caller_phone: The caller's phone number as they gave it, e.g. '+14155550190'. REQUIRED — always pass.
     """
-    _merge_booking_fields(
-        ctx.deps,
-        class_type=class_type,
-        date_value=date_value,
-        time_value=time_value,
-        caller_name=caller_name,
-        caller_phone=caller_phone,
-    )
-    missing = ctx.deps.missing_for_booking()
-    if missing:
-        return f"Still need: {', '.join(missing)} before I can complete the booking."
-
-    if not is_valid_phone(ctx.deps.caller_phone or ""):
-        ctx.deps.caller_phone = None
-        return "That phone number doesn't look right — I need 10 digits. Could you read it back?"
-
-    slot, error = await _resolve_target_slot(ctx.deps)
-    if error:
-        return error
-    assert slot is not None
-
-    if slot.is_full:
-        return (
-            f"That {slot.class_type} class is full. "
-            "Ask me to check another time first."
-        )
-
-    if not ctx.deps.caller_name or not ctx.deps.caller_phone:
-        return "I still need the caller name and phone number."
-
-    client = get_calendar_client()
-    phone_n = normalize_phone(ctx.deps.caller_phone)
-
-    # Same slot duplicate
-    if any(normalize_phone(b.phone) == phone_n for b in slot.booked):
-        return f"You're already booked for {format_slot_line(slot)}."
-
-    # Same-time double-booking across classes
-    siblings = await client.list_class_slots(slot.start, slot.start + timedelta(minutes=1))
-    conflict = next(
-        (
-            s for s in siblings
-            if s.event_id != slot.event_id
-            and any(normalize_phone(b.phone) == phone_n for b in s.booked)
-        ),
-        None,
-    )
-    if conflict is not None:
-        return f"You already have a booking at that time: {format_slot_line(conflict)}."
-
-    try:
-        updated = await client.add_booking(
-            slot,
-            ctx.deps.caller_name,
-            ctx.deps.caller_phone,
-        )
-    except ValueError:
-        return f"That {slot.class_type} class just filled up. Want another time?"
-
-    ctx.deps.slot_confirmed = True
-    ctx.deps.booking_confirmed = True
-    booked_summary = (
-        f"{updated.class_type} {updated.start.strftime('%H:%M')} "
-        f"{updated.start.date().isoformat()}"
-    )
-    await _log_calendar_success(
-        ctx.deps,
-        "booking",
-        f"Booked {ctx.deps.caller_name} into {format_slot_line(updated)}.",
-        class_booked=booked_summary,
-    )
-    return (
-        f"Booked {ctx.deps.caller_name} into {format_slot_line(updated)}. "
-        f"Confirmation on file: {normalize_phone(ctx.deps.caller_phone)}."
-    )
+    return await book_class_impl(ctx.deps, class_type, date_value, time_value, caller_name, caller_phone)
 
 
-@_core._agent.tool
-async def reschedule(
-    ctx: RunContext[BookingSession],
+# ---------------------------------------------------------------------------
+# reschedule
+# ---------------------------------------------------------------------------
+
+async def reschedule_impl(
+    session: BookingSession,
     new_date: str,
     new_time: str,
     old_date: str | None = None,
@@ -380,49 +422,26 @@ async def reschedule(
     caller_phone: str | None = None,
     caller_name: str | None = None,
 ) -> str:
-    """Move the caller's existing booking from one date/time to a different date/time.
-
-    Call this when the caller wants to reschedule, move, or change an existing booking.
-    You MUST have the new_date and new_time the caller wants to move to — ask for them
-    if not given, do not guess. The existing booking's date/time can be passed as
-    old_date / old_time when the caller specifies them; otherwise the tool falls back
-    to the most recently discussed slot in session context. The new slot can be a
-    DIFFERENT class type than the old one — pass `new_class_type` when the caller
-    explicitly chooses one (e.g. "move my Mat 9am to the Reformer 7pm"). If you omit
-    it, the tool first looks for the same class type as the old booking, then falls
-    back to any single class available at the new time. Caller phone is required.
-    Do NOT call `check_slot` for a reschedule request — call this tool directly.
-
-    Args:
-        new_date: Date the caller wants to move TO in YYYY-MM-DD, e.g. '2026-05-30'. REQUIRED.
-        new_time: Time the caller wants to move TO — '9am', '6pm', '18:00'. REQUIRED.
-        old_date: Date of the EXISTING booking in YYYY-MM-DD. Omit to use session context.
-        old_time: Time of the EXISTING booking — '9am', '6pm'. Omit to use session context.
-        new_class_type: Class type to move TO — 'Reformer', 'Mat', 'Tower'. Pass when the
-            caller is switching class types; omit when keeping the same class.
-        caller_phone: The caller's phone number — REQUIRED to locate their existing booking.
-        caller_name: The caller's name, optional. Used as the display name on the new slot.
-    """
-    _merge_booking_fields(ctx.deps, caller_name=caller_name, caller_phone=caller_phone)
-    if not ctx.deps.caller_phone:
+    _merge_booking_fields(session, caller_name=caller_name, caller_phone=caller_phone)
+    if not session.caller_phone:
         return "I need the caller phone number to find their existing booking."
 
     resolved_old_date = old_date
     resolved_old_time = old_time
     if not resolved_old_date or not resolved_old_time:
-        if ctx.deps.existing_bookings and len(ctx.deps.existing_bookings) == 1:
-            only = ctx.deps.existing_bookings[0]
+        if session.existing_bookings and len(session.existing_bookings) == 1:
+            only = session.existing_bookings[0]
             resolved_old_date = resolved_old_date or only.get("date")
             resolved_old_time = resolved_old_time or only.get("time")
-        elif ctx.deps.existing_bookings and len(ctx.deps.existing_bookings) > 1:
+        elif session.existing_bookings and len(session.existing_bookings) > 1:
             options = ", ".join(
                 f"{b.get('class_type')} {b.get('time')} on {b.get('date')}"
-                for b in ctx.deps.existing_bookings
+                for b in session.existing_bookings
             )
             return f"You have multiple bookings — which one should I move? Options: {options}."
     if not resolved_old_date or not resolved_old_time:
-        resolved_old_date = resolved_old_date or ctx.deps.preferred_date
-        resolved_old_time = resolved_old_time or ctx.deps.preferred_time
+        resolved_old_date = resolved_old_date or session.preferred_date
+        resolved_old_time = resolved_old_time or session.preferred_time
     if not resolved_old_date or not resolved_old_time:
         return "I need the date and time of your existing booking to move it."
 
@@ -445,7 +464,7 @@ async def reschedule(
     new_hour, new_minute = new_parsed
 
     client = get_calendar_client()
-    phone_n = normalize_phone(ctx.deps.caller_phone)
+    phone_n = normalize_phone(session.caller_phone)
 
     # Find the existing slot at old_date/old_time that has this phone booked
     old_dt = studio_datetime(old_day, old_hour, old_minute)
@@ -492,7 +511,7 @@ async def reschedule(
     if conflict is not None:
         return f"You already have another booking at that time: {format_slot_line(conflict)}."
 
-    display_name = ctx.deps.caller_name
+    display_name = session.caller_name
     if not display_name:
         for b in existing.booked:
             if normalize_phone(b.phone) == phone_n:
@@ -503,22 +522,143 @@ async def reschedule(
     await client.remove_booking(existing, phone_n)
     updated = await client.add_booking(target, display_name, phone_n)
 
-    ctx.deps.class_type = updated.class_type
-    ctx.deps.preferred_date = new_date
-    ctx.deps.preferred_time = f"{new_hour:02d}:{new_minute:02d}"
-    ctx.deps.booking_confirmed = True
-    ctx.deps.slot_confirmed = True
+    session.class_type = updated.class_type
+    session.preferred_date = new_date
+    session.preferred_time = f"{new_hour:02d}:{new_minute:02d}"
+    session.booking_confirmed = True
+    session.slot_confirmed = True
     new_summary = (
         f"{updated.class_type} {updated.start.strftime('%H:%M')} "
         f"{updated.start.date().isoformat()}"
     )
     await _log_calendar_success(
-        ctx.deps,
+        session,
         "reschedule",
         f"Moved booking from {format_slot_line(existing)} to {format_slot_line(updated)}.",
         class_booked=new_summary,
     )
     return f"Moved booking from {format_slot_line(existing)} to {format_slot_line(updated)}."
+
+
+@_core._agent.tool
+async def reschedule(
+    ctx: RunContext[BookingSession],
+    new_date: str,
+    new_time: str,
+    old_date: str | None = None,
+    old_time: str | None = None,
+    new_class_type: str | None = None,
+    caller_phone: str | None = None,
+    caller_name: str | None = None,
+) -> str:
+    """Move the caller's existing booking from one date/time to a different date/time.
+
+    Call this when the caller wants to reschedule, move, or change an existing booking.
+    You MUST have the new_date and new_time the caller wants to move to — ask for them
+    if not given, do not guess. The existing booking's date/time can be passed as
+    old_date / old_time when the caller specifies them; otherwise the tool falls back
+    to the most recently discussed slot in session context. The new slot can be a
+    DIFFERENT class type than the old one — pass `new_class_type` when the caller
+    explicitly chooses one (e.g. "move my Mat 9am to the Reformer 7pm"). If you omit
+    it, the tool first looks for the same class type as the old booking, then falls
+    back to any single class available at the new time. Caller phone is required.
+    Do NOT call `check_slot` for a reschedule request — call this tool directly.
+
+    Args:
+        new_date: Date the caller wants to move TO in YYYY-MM-DD, e.g. '2026-05-30'. REQUIRED.
+        new_time: Time the caller wants to move TO — '9am', '6pm', '18:00'. REQUIRED.
+        old_date: Date of the EXISTING booking in YYYY-MM-DD. Omit to use session context.
+        old_time: Time of the EXISTING booking — '9am', '6pm'. Omit to use session context.
+        new_class_type: Class type to move TO — 'Reformer', 'Mat', 'Tower'. Pass when the
+            caller is switching class types; omit when keeping the same class.
+        caller_phone: The caller's phone number — REQUIRED to locate their existing booking.
+        caller_name: The caller's name, optional. Used as the display name on the new slot.
+    """
+    return await reschedule_impl(
+        ctx.deps, new_date, new_time, old_date, old_time, new_class_type, caller_phone, caller_name
+    )
+
+
+# ---------------------------------------------------------------------------
+# cancel_booking
+# ---------------------------------------------------------------------------
+
+async def cancel_booking_impl(
+    session: BookingSession,
+    date_value: str | None = None,
+    time_value: str | None = None,
+    caller_phone: str | None = None,
+    caller_name: str | None = None,
+) -> str:
+    _merge_booking_fields(
+        session,
+        date_value=date_value,
+        time_value=time_value,
+        caller_name=caller_name,
+        caller_phone=caller_phone,
+    )
+    if not session.caller_phone:
+        return "I need the caller phone number to find their booking."
+
+    client = get_calendar_client()
+    phone_n = normalize_phone(session.caller_phone)
+
+    # Specific slot if class_type + date + time are all set
+    if session.preferred_date and session.preferred_time and session.class_type:
+        slot, error = await _resolve_target_slot(session)
+        if error:
+            return error
+        assert slot is not None
+        if not any(normalize_phone(b.phone) == phone_n for b in slot.booked):
+            return "I don't see a booking for that phone number in that class."
+        await client.remove_booking(slot, phone_n)
+        session.booking_confirmed = False
+        await _log_calendar_success(
+            session,
+            "cancel",
+            f"Cancelled booking for {format_slot_line(slot)}.",
+        )
+        return f"Cancelled the booking for {format_slot_line(slot)}."
+
+    # Use existing_bookings context if available
+    if session.existing_bookings and len(session.existing_bookings) == 1:
+        only = session.existing_bookings[0]
+        hh, mm = only["time"].split(":")
+        target_dt = studio_datetime(date.fromisoformat(only["date"]), int(hh), int(mm))
+        candidates = await client.list_class_slots(target_dt, target_dt + timedelta(minutes=1))
+        match = next((s for s in candidates if s.event_id == only.get("event_id")), None)
+        if match is not None:
+            await client.remove_booking(match, phone_n)
+            session.booking_confirmed = False
+            await _log_calendar_success(
+                session,
+                "cancel",
+                f"Cancelled booking for {format_slot_line(match)}.",
+            )
+            return f"Cancelled the booking for {format_slot_line(match)}."
+
+    if session.existing_bookings and len(session.existing_bookings) > 1:
+        options = ", ".join(
+            f"{b.get('class_type')} {b.get('time')} on {b.get('date')}"
+            for b in session.existing_bookings
+        )
+        return f"You have multiple bookings — which one should I cancel? Options: {options}."
+
+    # Final fallback — scan calendar for first booking
+    search_start = studio_datetime(date.today(), 0)
+    search_end = studio_datetime(date.today() + timedelta(days=60), 23, 59)
+    current = await client.find_booking_by_phone(session.caller_phone, search_start, search_end)
+    if current is None:
+        return "I couldn't find an existing booking for that phone number."
+
+    await client.remove_booking(current, phone_n)
+    session.booking_confirmed = False
+    await _log_calendar_success(
+        session,
+        "cancel",
+        f"Cancelled booking for {format_slot_line(current)}.",
+    )
+    return f"Cancelled the booking for {format_slot_line(current)}."
 
 
 @_core._agent.tool
@@ -545,72 +685,4 @@ async def cancel_booking(
             time you call this tool so the lookup can find their existing booking.
         caller_name: The caller's name, optional.
     """
-    _merge_booking_fields(
-        ctx.deps,
-        date_value=date_value,
-        time_value=time_value,
-        caller_name=caller_name,
-        caller_phone=caller_phone,
-    )
-    if not ctx.deps.caller_phone:
-        return "I need the caller phone number to find their booking."
-
-    client = get_calendar_client()
-    phone_n = normalize_phone(ctx.deps.caller_phone)
-
-    # Specific slot if class_type + date + time are all set
-    if ctx.deps.preferred_date and ctx.deps.preferred_time and ctx.deps.class_type:
-        slot, error = await _resolve_target_slot(ctx.deps)
-        if error:
-            return error
-        assert slot is not None
-        if not any(normalize_phone(b.phone) == phone_n for b in slot.booked):
-            return "I don't see a booking for that phone number in that class."
-        await client.remove_booking(slot, phone_n)
-        ctx.deps.booking_confirmed = False
-        await _log_calendar_success(
-            ctx.deps,
-            "cancel",
-            f"Cancelled booking for {format_slot_line(slot)}.",
-        )
-        return f"Cancelled the booking for {format_slot_line(slot)}."
-
-    # Use existing_bookings context if available
-    if ctx.deps.existing_bookings and len(ctx.deps.existing_bookings) == 1:
-        only = ctx.deps.existing_bookings[0]
-        hh, mm = only["time"].split(":")
-        target_dt = studio_datetime(date.fromisoformat(only["date"]), int(hh), int(mm))
-        candidates = await client.list_class_slots(target_dt, target_dt + timedelta(minutes=1))
-        match = next((s for s in candidates if s.event_id == only.get("event_id")), None)
-        if match is not None:
-            await client.remove_booking(match, phone_n)
-            ctx.deps.booking_confirmed = False
-            await _log_calendar_success(
-                ctx.deps,
-                "cancel",
-                f"Cancelled booking for {format_slot_line(match)}.",
-            )
-            return f"Cancelled the booking for {format_slot_line(match)}."
-
-    if ctx.deps.existing_bookings and len(ctx.deps.existing_bookings) > 1:
-        options = ", ".join(
-            f"{b.get('class_type')} {b.get('time')} on {b.get('date')}"
-            for b in ctx.deps.existing_bookings
-        )
-        return f"You have multiple bookings — which one should I cancel? Options: {options}."
-
-    # Final fallback — scan calendar for first booking
-    search_start = studio_datetime(date.today(), 0)
-    search_end = studio_datetime(date.today() + timedelta(days=60), 23, 59)
-    current = await client.find_booking_by_phone(ctx.deps.caller_phone, search_start, search_end)
-    if current is None:
-        return "I couldn't find an existing booking for that phone number."
-
-    await client.remove_booking(current, phone_n)
-    ctx.deps.booking_confirmed = False
-    await _log_calendar_success(
-        ctx.deps,
-        "cancel",
-        f"Cancelled booking for {format_slot_line(current)}.",
-    )
-    return f"Cancelled the booking for {format_slot_line(current)}."
+    return await cancel_booking_impl(ctx.deps, date_value, time_value, caller_phone, caller_name)
