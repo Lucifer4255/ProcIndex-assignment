@@ -1,7 +1,9 @@
-"""Create or update the Elliot Vapi assistant — run once to register the assistant.
+"""Create or update the Elliot Vapi assistant.
 
-Usage:
-    uv run python vapi/setup.py
+Runs automatically on FastAPI startup (api/main.py lifespan). May also be invoked
+directly:
+
+    uv run python scripts/vapi_setup.py
 
 Prints the assistant ID. Copy it into VAPI_ASSISTANT_ID in .env so subsequent
 runs update the existing assistant instead of creating a new one.
@@ -18,7 +20,10 @@ from vapi import AsyncVapi
 from vapi.types import OpenAiFunction, OpenAiFunctionParameters, Server
 from vapi.types.create_assistant_dto_model import CreateAssistantDtoModel_Openai
 from vapi.types.create_assistant_dto_voice import CreateAssistantDtoVoice_Vapi
-from vapi.types.open_ai_model_tools_item import OpenAiModelToolsItem_Function
+from vapi.types.open_ai_model_tools_item import OpenAiModelToolsItem_Function, OpenAiModelToolsItem_TransferCall
+from vapi.types.create_transfer_call_tool_dto_destinations_item import CreateTransferCallToolDtoDestinationsItem_Number
+from vapi.phone_numbers.types.create_phone_numbers_request import CreatePhoneNumbersRequest_Twilio
+from vapi.phone_numbers.types.update_phone_numbers_request_body import UpdatePhoneNumbersRequestBody_Twilio
 
 load_dotenv()
 
@@ -44,7 +49,7 @@ When the caller wants to reschedule or cancel, get their phone and call lookup_e
 
 For group bookings, private sessions, or birthday parties, explain a manager will follow up, collect name and callback phone, then call log_call with reason group_booking, priority high, callback_required true.
 
-For billing, refunds, injuries, instructor complaints, or membership cancellations: acknowledge calmly, collect name and callback number, then call escalate_to_human.
+For billing, refunds, injuries, instructor complaints, or membership cancellations: acknowledge calmly and never promise refunds or outcomes. Always ask for the caller's name AND a callback number explicitly — even if you think you already have them — before calling escalate_to_human. Once you have both, call escalate_to_human to log it, then immediately call transferCall to connect the caller to a manager.
 """.strip()
 
 
@@ -65,7 +70,21 @@ def _fn_tool(
     return OpenAiModelToolsItem_Function(function=fn, server=server)
 
 
-def _build_tools(webhook_url: str) -> list[OpenAiModelToolsItem_Function]:
+_ESCALATION_NUMBER = "+917439245158"
+
+
+def _transfer_tool() -> OpenAiModelToolsItem_TransferCall:
+    twilio_number = os.environ.get("TWILIO_PHONE_NUMBER", "").strip()
+    destination = CreateTransferCallToolDtoDestinationsItem_Number(
+        number=_ESCALATION_NUMBER,
+        caller_id=twilio_number or None,
+        description="Studio manager — use for billing, refunds, injuries, or complaints.",
+        number_e_164_check_enabled=False,
+    )
+    return OpenAiModelToolsItem_TransferCall(destinations=[destination])
+
+
+def _build_tools(webhook_url: str) -> list[OpenAiModelToolsItem_Function | OpenAiModelToolsItem_TransferCall]:
     url = webhook_url
     s = {"type": "string"}
 
@@ -156,7 +175,7 @@ def _build_tools(webhook_url: str) -> list[OpenAiModelToolsItem_Function]:
         ),
         _fn_tool(
             "escalate_to_human",
-            "Escalate billing, refund, injury, instructor complaint, membership cancellation, or abuse to a manager. Collect callback number first.",
+            "Escalate billing, refund, injury, instructor complaint, membership cancellation, or abuse to a manager. You MUST ask for the caller's name AND callback number before calling this tool — even if you think you already have them.",
             {
                 "reason": {"type": "string", "enum": ["billing", "refund", "injury", "instructor_complaint", "membership_cancel", "abuse", "other"]},
                 "callback_number": {**s, "description": "Best number for callback. Omit if in session."},
@@ -167,6 +186,43 @@ def _build_tools(webhook_url: str) -> list[OpenAiModelToolsItem_Function]:
             server_url=url,
         ),
     ]
+
+
+async def _setup_phone_number(client: AsyncVapi, assistant_id: str) -> None:
+    twilio_sid = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
+    twilio_token = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
+    twilio_number = os.environ.get("TWILIO_PHONE_NUMBER", "").strip()
+    raw_pn_id = os.environ.get("VAPI_PHONE_NUMBER_ID", "").split("#")[0].strip()
+    phone_number_id = raw_pn_id if raw_pn_id else ""
+
+    if not twilio_sid or not twilio_token or not twilio_number:
+        print("Skipping phone number setup — TWILIO_* vars not set.")
+        return
+
+    if phone_number_id:
+        print(f"Phone number {phone_number_id} already imported — assistant link unchanged.")
+        return
+
+    # No ID in env — check if Vapi already has this number before re-importing.
+    existing = await client.phone_numbers.list()
+    for item in existing:
+        if getattr(item, "number", None) == twilio_number:
+            print(f"Phone number {item.number} already in Vapi as {item.id} — skipping import.")
+            print(f"\nAdd this to your .env:\n  VAPI_PHONE_NUMBER_ID={item.id}")
+            return
+
+    # Import fresh from Twilio and assign to assistant.
+    pn = await client.phone_numbers.create(
+        request=CreatePhoneNumbersRequest_Twilio(
+            number=twilio_number,
+            twilio_account_sid=twilio_sid,
+            twilio_auth_token=twilio_token,
+            assistant_id=assistant_id,
+            name="Solstice Pilates — Main Line",
+        )
+    )
+    print(f"Imported Twilio number: {pn.number}  id={pn.id}")
+    print(f"\nAdd this to your .env:\n  VAPI_PHONE_NUMBER_ID={pn.id}")
 
 
 async def main() -> None:
@@ -180,11 +236,11 @@ async def main() -> None:
         print("ERROR: BASE_URL not set in .env", file=sys.stderr)
         sys.exit(1)
 
-    llm_model = os.environ.get("VAPI_LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
-    assistant_id = os.environ.get("VAPI_ASSISTANT_ID", "").strip()
+    llm_model = os.environ.get("VAPI_LLM_MODEL", "gpt-4o")
+    assistant_id = os.environ.get("VAPI_ASSISTANT_ID", "").split("#")[0].strip()
 
     webhook_url = f"{base_url}/vapi/webhook"
-    tools = _build_tools(webhook_url)
+    tools = [*_build_tools(webhook_url), _transfer_tool()]
 
     model = CreateAssistantDtoModel_Openai(
         model=llm_model,
@@ -212,6 +268,9 @@ async def main() -> None:
         assistant = await client.assistants.create(**kwargs)
         print(f"Created assistant: {assistant.id}")
         print(f"\nAdd this to your .env:\n  VAPI_ASSISTANT_ID={assistant.id}")
+        assistant_id = assistant.id
+
+    await _setup_phone_number(client, assistant_id)
 
 
 if __name__ == "__main__":
