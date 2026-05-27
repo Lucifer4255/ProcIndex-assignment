@@ -97,11 +97,11 @@
 </head>
 <body>
   <h1>Solstice Pilates</h1>
-  <p class="subtitle">Chat with Maya, the studio receptionist</p>
+  <p class="subtitle">Chat with Elliot, the studio receptionist</p>
 
   <div id="messages">
     <div class="msg assistant">
-      <div class="role">Maya</div>
+      <div class="role">Elliot</div>
       <span>Thanks for reaching out to Solstice Pilates! How can I help you today?</span>
     </div>
   </div>
@@ -123,7 +123,7 @@
     function appendMessage(role, text) {
       const div = document.createElement("div");
       div.className = `msg ${role}`;
-      div.innerHTML = `<div class="role">${role === "user" ? "You" : "Maya"}</div><span></span>`;
+      div.innerHTML = `<div class="role">${role === "user" ? "You" : "Elliot"}</div><span></span>`;
       div.querySelector("span").textContent = text;
       messagesEl.appendChild(div);
       messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -133,8 +133,8 @@
       const div = document.createElement("div");
       div.className = "msg assistant typing";
       div.innerHTML = `
-        <div class="role">Maya</div>
-        <span class="typing-dots" aria-label="Maya is typing">
+        <div class="role">Elliot</div>
+        <span class="typing-dots" aria-label="Elliot is typing">
           <span class="dot"></span><span class="dot"></span><span class="dot"></span>
         </span>
       `;
