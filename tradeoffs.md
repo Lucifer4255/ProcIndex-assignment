@@ -118,7 +118,24 @@ A running list of design decisions we've made and ideas worth considering if thi
 
 ---
 
-## 10. Sheets header-row detection is permissive by convention, not by code
+## 10. Two-tab Sheet split: aggregate + append-only log
+
+**Current:** `Contacts` tab is one row per caller (per phone) — name, call_count, last_called, last_class_booked, last_call_*, priority_flag, callback_required. Every successful booking/reschedule/cancel/log_call/escalate also appends to a separate `CallLog` tab — one row per event with timestamp, phone, reason, summary, priority, callback_required, notes.
+
+**Why two tabs:** A single aggregate row loses event history. If Alan escalates a billing issue (priority=urgent, callback_required=TRUE), then later books a class, the booking's reason overwrites "billing" in last_call_reason — the manager dashboard can no longer tell *what* the urgent issue is. Splitting fixes this: Contacts shows the current state, CallLog shows the full thread.
+
+**Manager workflow:**
+- Filter `Contacts` by `priority_flag=urgent` → list of callers needing attention
+- For each caller, sort `CallLog` by phone + timestamp → see the full conversation history
+- Resolving the urgent issue means manually clearing the Contacts flag; the CallLog row stays
+
+**Tradeoff:** Two writes per logging tool call → 2× Sheets API quota usage. CallLog grows unbounded (could need archival after a year of high call volume). Acceptable for any realistic studio scale.
+
+**Why not a DB:** Same reasoning as item #9 — staff want to read and edit this in Sheets. A separate logs table in Postgres would lose that affordance.
+
+---
+
+## 11. Sheets header-row detection is permissive by convention, not by code
 
 **Current:** `GoogleSheetsClient.get_row_by_phone` only recognises a header row when `rows[0][0].lower() == "phone"`. Any other label ("Phone Number", "Caller Phone", blank A1, etc.) causes the header row to be treated as data.
 

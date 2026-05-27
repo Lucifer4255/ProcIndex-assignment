@@ -15,6 +15,9 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 CONTACTS_TAB = "Contacts"
 CONTACTS_RANGE = f"{CONTACTS_TAB}!A:J"
 
+CALLLOG_TAB = "CallLog"
+CALLLOG_RANGE = f"{CALLLOG_TAB}!A:H"
+
 COLUMNS = (
     "phone",
     "name",
@@ -24,6 +27,17 @@ COLUMNS = (
     "last_call_reason",
     "last_call_summary",
     "priority_flag",
+    "callback_required",
+    "notes",
+)
+
+CALLLOG_COLUMNS = (
+    "timestamp",
+    "phone",
+    "name",
+    "reason",
+    "summary",
+    "priority",
     "callback_required",
     "notes",
 )
@@ -163,6 +177,44 @@ class GoogleSheetsClient:
             await self._run(_append)
 
         return merged
+
+
+    async def append_log_row(
+        self,
+        phone: str,
+        fields: dict[str, Any],
+    ) -> None:
+        """Append one row to the CallLog tab — full per-event history.
+
+        Unlike Contacts.upsert_row, this never overwrites prior rows: every call
+        gets its own audit entry so urgent issues aren't masked by later actions.
+        """
+        phone_n = normalize_phone(phone)
+        row_dict: dict[str, Any] = {
+            "timestamp": _now_iso(),
+            "phone": phone_n,
+            "name": fields.get("name", ""),
+            "reason": fields.get("reason", ""),
+            "summary": fields.get("summary", ""),
+            "priority": fields.get("priority", "normal"),
+            "callback_required": fields.get("callback_required", "FALSE"),
+            "notes": fields.get("notes", ""),
+        }
+        if isinstance(row_dict["callback_required"], bool):
+            row_dict["callback_required"] = "TRUE" if row_dict["callback_required"] else "FALSE"
+        row_values = [str(row_dict.get(col, "") or "") for col in CALLLOG_COLUMNS]
+
+        def _append():
+            body = {"values": [row_values]}
+            self._service.spreadsheets().values().append(
+                spreadsheetId=self._sheet_id,
+                range=CALLLOG_RANGE,
+                valueInputOption="RAW",
+                insertDataOption="INSERT_ROWS",
+                body=body,
+            ).execute()
+
+        await self._run(_append)
 
 
 def create_sheets_client_from_env() -> GoogleSheetsClient:

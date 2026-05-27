@@ -107,6 +107,16 @@ async def _log_calendar_success(
         if class_booked:
             fields["last_class_booked"] = class_booked
         await client.upsert_row(session.caller_phone, fields)
+        await client.append_log_row(
+            session.caller_phone,
+            {
+                "name": session.caller_name or "",
+                "reason": reason,
+                "summary": summary,
+                "priority": "normal",
+                "callback_required": "FALSE",
+            },
+        )
     except Exception:
         return
 

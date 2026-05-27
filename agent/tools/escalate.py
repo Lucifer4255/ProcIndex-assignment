@@ -92,6 +92,17 @@ async def escalate_to_human(
     try:
         client = get_sheets_client()
         await client.upsert_row(phone_n, fields)
+        await client.append_log_row(
+            phone_n,
+            {
+                "name": ctx.deps.caller_name or "",
+                "reason": reason,
+                "summary": summary,
+                "priority": "urgent",
+                "callback_required": "TRUE",
+                "notes": (notes or "").strip(),
+            },
+        )
     except Exception:
         # Sheets unavailable — still reassure the caller; surface in logs only.
         # TODO: ship to a fallback sink (email, queue) so sensitive escalations

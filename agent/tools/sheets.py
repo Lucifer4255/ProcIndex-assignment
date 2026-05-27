@@ -160,6 +160,17 @@ async def log_call(
     try:
         client = get_sheets_client()
         await client.upsert_row(phone_n, fields)
+        await client.append_log_row(
+            phone_n,
+            {
+                "name": ctx.deps.caller_name or "",
+                "reason": reason,
+                "summary": summary.strip(),
+                "priority": priority,
+                "callback_required": "TRUE" if callback_required else "FALSE",
+                "notes": (notes or "").strip(),
+            },
+        )
     except Exception:
         # Don't crash the conversation if the sheet is down — log path is best-effort.
         if callback_required:
