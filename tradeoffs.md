@@ -21,15 +21,17 @@ A running list of design decisions we've made and ideas worth considering if thi
 
 ---
 
-## 2. Model fallback chain ordering
+## 2. Model selection per phase
 
-**Current:** `FallbackModel(gemini-2.5-flash-lite, llama-3.3-70b-instruct, claude-haiku-4-5)`.
+**Phase 1 (chat):** `FallbackModel(deepseek/deepseek-v3.2, deepseek/deepseek-v4-flash, z-ai/glm-4.5-air)` via OpenRouter. Cheapest/fastest tried first; falls through on error. Configured in `agent/core.py`.
 
-**Tradeoff:** Cheapest/fastest first, most reliable tool-caller last. We pay for the cheap model's failures (one wasted call before fallback fires) in exchange for near-zero cost on the happy path.
+**Phase 2 (voice):** `gpt-4o` via Vapi's native OpenAI provider. Vapi runs its own LLM — our server only handles tool-call webhooks.
+
+**Tradeoff (Phase 1 fallback chain):** We pay for the cheap model's failures (one wasted call before fallback fires) in exchange for near-zero cost on the happy path. The order matters: if a cheaper model is actually failing frequently, it's no longer cheap once you count wasted calls.
 
 **When to revisit:**
-- If we see frequent fallbacks in Logfire (>5% of turns), reorder — the "cheap" model is actually expensive once you count the wasted call + the fallback
-- For Phase 2 voice, latency matters more than cost; consider putting the most consistent tool-caller first to avoid the cold-start of falling through
+- If Logfire shows >5% fallback rate, reorder or drop the failing model
+- For a production Phase 1, swap to `claude-sonnet-4-5` or `gpt-4o` — both have highly reliable tool calling at modest cost
 
 ---
 
@@ -145,10 +147,39 @@ A running list of design decisions we've made and ideas worth considering if thi
 
 ---
 
-## 11. Description as source of truth
+## 12. Description as source of truth
 
 **Current:** Booking data lives in the Calendar event description; Redis only holds in-flight session state. If Redis dies, no bookings are lost.
 
 **Tradeoff:** Every booking mutation is a Calendar API round-trip (slow, rate-limited). The trade is worth it for durability — Calendar is the authoritative system staff already check.
 
 **Could add:** Write-through cache in Redis keyed by event_id, with TTL short enough that stale data doesn't matter. Optimizes read-heavy reschedule/cancel flows.
+
+---
+
+## 13. Ports-and-adapters: domain tools shared across transports
+
+**Current:** Domain logic lives in `tools/` (plain async functions, no framework imports). `agent/tools/` wraps each with `@agent.tool` for Phase 1. `vapi_adapter/service.py` dispatches to the same functions directly for Phase 2.
+
+**Why:** When Phase 2 was added, the naive path was to duplicate tool logic in a second set of Vapi-specific handlers. Instead we separated the domain from the transport — both phases call the same `tools/calendar.py`, `tools/sheets.py`, etc. A bug fix or behaviour change in `check_slot` applies to both chat and voice without touching two codebases.
+
+**Tradeoff:** One extra indirection layer (`agent/tools/` shims) that adds no logic — just wires PydanticAI's `@agent.tool` decorator around the domain call. Worth it for a submission where code quality is judged; would likely collapse it for a prototype.
+
+**When to revisit:** If the two transports ever need genuinely different tool behaviour (e.g. voice needs truncated results to keep TTS short), the shim layer is the right place to add that adaptation rather than branching inside the domain function.
+
+---
+
+## 14. Vapi owns the LLM for Phase 2
+
+**Current:** In Phase 2, Vapi runs `gpt-4o` internally. Our server is a pure tool webhook — it never sees the conversation transcript mid-call.
+
+**Why:** Vapi handles STT, turn-taking, barge-in, TTS, and LLM routing in a single managed platform. Building that stack ourselves would take weeks and introduce new latency variables.
+
+**Tradeoff:** We lose direct control over the conversation loop. We cannot inject system prompt updates mid-call, cannot stream partial tool results, and cannot observe the raw transcript until `end-of-call-report` arrives. The model running in Vapi must be instructed entirely via the static system prompt — no runtime steering.
+
+**What we do to compensate:**
+- System prompt is highly prescriptive (quoted enum values, explicit step ordering) to reduce model ambiguity
+- Tool docstrings double as Vapi tool descriptions (single source of truth via `_doc(fn)` in `scripts/vapi_setup.py`)
+- `BookingSession` in Redis carries enough state across tool calls that the webhook can be stateless per call
+
+**When to revisit:** If Vapi's latency or reliability becomes a problem, the `vapi_adapter/` layer is self-contained — swap Vapi for Twilio Voice + a self-hosted LLM loop without touching domain tools or the Phase 1 chat path.
