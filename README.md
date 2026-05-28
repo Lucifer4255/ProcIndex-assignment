@@ -2,6 +2,13 @@
 
 AI text and voice receptionist for Solstice Pilates. Phase 1: chat UI. Phase 2: Vapi voice.
 
+## Demo
+
+| Phase | Description | Link |
+|-------|-------------|------|
+| Phase 1 | Text chat UI | [Watch](https://youtu.be/KdBo7BSylpE) |
+| Phase 2 | Vapi voice calls | [Watch](https://youtu.be/Bcd68wVTY44) |
+
 ## Prerequisites
 
 - Python 3.12+
