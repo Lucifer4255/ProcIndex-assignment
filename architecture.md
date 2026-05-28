@@ -1,8 +1,10 @@
 # Solstice Pilates — AI Receptionist Architecture
 
+> **Interactive diagram:** [View on Miro](https://miro.com/app/board/uXjVIlldD90=/?moveToWidget=3458764673515089855) · [Architecture walkthrough (Loom)](https://www.loom.com/share/9a933e49e3174a98a0f218605014f405)
+
 ## Overview
 
-An AI voice and text receptionist for Solstice Pilates (San Francisco). Handles ~30 inbound calls/day. Phase 1 is a text chat interface. Phase 2 wires the same agent into Vapi for live voice calls.
+An AI voice and text receptionist for Solstice Pilates (San Francisco). Handles ~30 inbound calls/day. Phase 1 is a text chat interface. Phase 2 wires the same domain tools into Vapi for live voice calls.
 
 The agent uses progressive elicitation — it never fails on missing booking info, it asks for each piece naturally across turns until it has everything it needs to act.
 
@@ -27,76 +29,76 @@ The agent uses progressive elicitation — it never fails on missing booking inf
 
 ## System Layers
 
+Phase 1 (text chat) and Phase 2 (voice) share the same domain tools but use different runtimes. Vapi runs its own LLM — our server only handles tool-call webhooks.
+
 ```
-┌─────────────────────────────────────────────────┐
-│  Input channels                                  │
-│  Chat UI (Phase 1)        Vapi (Phase 2)         │
-│  POST /chat               STT → LLM → TTS        │
-└────────────┬──────────────────┬──────────────────┘
-             │                  │
-┌────────────▼──────────────────▼──────────────────┐
-│  FastAPI server                                   │
-│  POST /chat     POST /vapi/webhook                │
-│  (Phase 1)      tool-call · end-of-call           │
-└────────────────────────┬──────────────────────────┘
-                         │
-┌────────────────────────▼──────────────────────────┐
-│  PydanticAI Agent                                  │
-│  BookingSession (RunContext deps)                  │
-│  message_history (loaded from Redis per turn)      │
-│                         ↕                         │
-│  Redis — session keyed by call.id / chat_id        │
-└───┬──────────┬──────────┬──────────┬──────────────┘
-    │          │          │          │
-check_slot  book/     log_call  escalate
-            reschedule
-    │          │          │          │
-    └────┬─────┘          └────┬─────┘
-         │                     │
-  Google Calendar        Google Sheets
-  events · freebusy      Contacts tab
+Phase 1 — Text Chat               Phase 2 — Voice
+────────────────────               ────────────────────────────────
+Chat UI                            Vapi  (STT → Vapi LLM → TTS)
+  │ POST /chat                       │ tool-calls webhook (HTTP)
+  ▼                                  ▼
+PydanticAI Agent (Elliot)          POST /vapi/webhook
+BookingSession in RunContext        VapiService — dispatches tool calls
+message_history in Redis            BookingSession in Redis (per call.id)
+  │ tool call / result               │ tool call / result
+  └──────────────┬───────────────────┘
+                 ▼
+    Domain Tools  (tools/)
+    ┌──────────────────────────────────────────┐
+    │ check_slot          lookup_existing_bookings │
+    │ book_class          get_current_date         │
+    │ reschedule          log_call                 │
+    │ cancel_booking      get_caller_history        │
+    │                     escalate_to_human         │
+    └──────────────────────────────────────────┘
+         │                          │
+  Google Calendar              Google Sheets
+  events · capacity            Contacts tab
 ```
 
 ---
 
 ## File Structure
 
+Ports-and-adapters layout: pure domain in `tools/`, PydanticAI shims in `agent/tools/`, Vapi adapter standalone in `vapi_adapter/`.
+
 ```
 solstice-receptionist/
-├── agent/
-│   ├── __init__.py
-│   ├── core.py              # PydanticAI agent definition, model config
-│   ├── models.py            # BookingSession and other agent/domain models
-│   ├── storage.py           # Redis SessionStore for session + message history
-│   ├── tools/
-│   │   ├── __init__.py
-│   │   ├── calendar.py      # check_slot, book_class, reschedule, cancel
-│   │   ├── sheets.py        # log_call, get_caller_history
-│   │   └── escalate.py      # escalate_to_human
+├── tools/                       # Domain layer — no framework imports
+│   ├── clock.py                 # get_current_date (PST)
+│   ├── calendar.py              # check_slot, book_class, reschedule, cancel_booking,
+│   │                            #   lookup_existing_bookings
+│   ├── sheets.py                # log_call, get_caller_history
+│   └── escalate.py              # escalate_to_human
+├── agent/                       # Phase 1 — PydanticAI adapter
+│   ├── core.py                  # Agent definition, model config
+│   ├── models.py                # BookingSession dataclass
+│   ├── storage.py               # Redis SessionStore
+│   ├── tools/                   # Thin @agent.tool shims wrapping tools/
+│   │   ├── calendar.py
+│   │   ├── sheets.py
+│   │   └── escalate.py
 │   └── prompts/
-│       └── system.py        # System prompt (6-section Vapi format)
+│       └── system.py            # Chat system prompt (6-section format)
+├── vapi_adapter/                # Phase 2 — Vapi HTTP adapter
+│   ├── service.py               # VapiService: load session, dispatch tool, save session
+│   └── router.py                # FastAPI router — POST /vapi/webhook
 ├── api/
-│   ├── __init__.py
-│   ├── main.py              # FastAPI app, lifespan, CORS, Logfire
+│   ├── main.py                  # FastAPI app, lifespan, CORS, Logfire
 │   ├── routes/
-│   │   ├── __init__.py
-│   │   ├── chat.py          # POST /chat — Phase 1
-│   │   └── vapi.py          # POST /vapi/webhook — Phase 2
-│   └── schemas.py           # Pydantic request/response models
+│   │   └── chat.py              # POST /chat — Phase 1
+│   └── settings.py              # Pydantic settings
 ├── integrations/
-│   ├── __init__.py
-│   ├── google_calendar.py   # GCal service wrapper (sync → async via executor)
-│   └── google_sheets.py     # Sheets service wrapper
-├── vapi/
-│   └── setup.py             # Script: create/update Vapi assistant via REST API
+│   ├── google_calendar.py       # GCal service wrapper (sync → async via executor)
+│   └── google_sheets.py         # Sheets service wrapper
 ├── scripts/
-│   └── seed_calendar.py     # Seed 2 weeks of class events + 3 existing bookings
+│   ├── vapi_setup.py            # Create/update Vapi assistant (run manually)
+│   └── seed_calendar.py         # Seed 2 weeks of class slots + sample bookings
 ├── ui/
-│   └── index.html           # Minimal chat UI (plain HTML/JS, no framework)
+│   └── index.html               # Chat UI (plain HTML/JS, no framework)
 ├── .env.example
 ├── pyproject.toml
 ├── architecture.md
-├── context.md
 └── README.md
 ```
 
@@ -166,63 +168,74 @@ await store.save(call_id, session, history)   # persist for next turn
 
 ## Tool Definitions
 
-All tools are `@agent.tool` decorated async functions receiving `RunContext[BookingSession]`.
+Domain tools live in `tools/` as plain async functions. `agent/tools/` wraps each with `@agent.tool` for Phase 1. `vapi_adapter/service.py` dispatches to the same domain functions directly for Phase 2.
+
+### get_current_date
+```
+Action: Returns current date, time, and timezone (America/Los_Angeles).
+Output: Human-readable string: "Today is Wednesday, May 28, 2025 (2025-05-28), 11:45 AM PST."
+Note:   Called first whenever the caller uses a relative phrase like "this Saturday".
+```
 
 ### check_slot
 ```
-Input:  class_type (optional), date (optional), time (optional)
-Action: Merges params into session. Calls GCal freebusy.
-Output: Available slots with spot counts, or alternatives if full.
-Note:   Never fails on missing params — returns what it found.
+Input:  class_type (optional), date_value (optional), time_value (optional)
+Action: Reads GCal events for the requested window. Filters past slots.
+Output: Available slots with spot counts. Marks slots matching existing_bookings
+        as "(your current booking)" when lookup_existing_bookings was called first.
+```
+
+### lookup_existing_bookings
+```
+Input:  caller_phone
+Action: Scans next 60 days of GCal for events booked under that phone.
+        Stores results in BookingSession.existing_bookings.
+Output: Summary of found bookings, e.g. "Found 1 booking: Mat 9am on Friday May 29."
+Note:   Call first in any reschedule or cancel flow so check_slot can annotate results.
 ```
 
 ### book_class
 ```
-Input:  (reads from ctx.deps — BookingSession)
-Action: Checks session is_bookable(). If not, returns missing fields list.
-        If bookable, creates GCal event with attendee note (phone).
-        Sets session.booking_confirmed = True.
-Output: Confirmation string or "still need: [fields]"
+Input:  class_type, date_value, time_value, caller_name, caller_phone
+Action: Patches GCal class-slot event to append attendee. Stores confirmation in session.
+Output: Booking confirmation string.
 ```
 
 ### reschedule
 ```
-Input:  new_date, new_time (merges into session)
-Action: Looks up existing event by caller_phone in GCal description.
-        Updates event datetime.
-Output: Confirmation with new slot details.
+Input:  new_date, new_time, caller_phone; old_date/old_time optional
+Action: Resolves old slot from args → existing_bookings → session context.
+        Removes attendee from old slot, adds to new slot.
+Output: Confirmation with old and new slot details.
 ```
 
 ### cancel_booking
 ```
-Input:  date (optional), time (optional)
-Action: Finds event by caller_phone. Deletes it.
-Output: Confirmation of cancellation.
+Input:  caller_phone; date_value/time_value optional
+Action: Resolves slot from args → existing_bookings → session context.
+        Removes attendee from GCal event.
+Output: Cancellation confirmation.
 ```
 
 ### get_caller_history
 ```
-Input:  phone (from session or Vapi payload)
-Action: Reads row from Sheets Contacts tab where phone matches.
-Output: Dict with name, last_class_booked, last_called, call_count.
-        Returns None if first-time caller.
+Input:  phone (falls back to session phone)
+Action: Reads row from Sheets Contacts tab.
+Output: name, last_class_booked, last_called, call_count — or "first-time caller".
 ```
 
 ### log_call
 ```
-Input:  reason, summary, priority ("normal"|"high"|"urgent")
-Action: Upserts row in Sheets Contacts tab (keyed by phone).
-        Updates: last_called, call_count, last_call_reason, last_call_summary.
+Input:  reason, summary, priority ("normal"|"high"|"urgent"), callback_required (bool)
+Action: Upserts row in Sheets Contacts tab keyed by phone.
 Output: Confirmation string.
-Note:   Always called at end-of-call via Vapi end-of-call-report webhook.
 ```
 
 ### escalate_to_human
 ```
-Input:  reason, callback_number (optional), priority ("high"|"urgent")
-Action: Calls log_call with escalation tag. Sets priority flag in Sheets.
-Output: Script for agent: "I'll make sure [manager name] calls you back..."
-Note:   Agent never commits to any outcome before calling this.
+Input:  reason, callback_number (optional), name (optional), notes (optional)
+Action: Logs escalation to Sheets with priority flag. Returns closing script for agent.
+Note:   Vapi then calls transferCall to connect caller to manager line.
 ```
 
 ---
@@ -319,39 +332,23 @@ Handles two event types from Vapi:
 
 ---
 
-## System Prompt Structure (6-section Vapi format)
+## System Prompt Structure
 
-```
-1. IDENTITY
-   You are Maya, the receptionist at Solstice Pilates in San Francisco...
+Two separate prompts — same 6-section skeleton, tuned differently:
 
-2. PERSONALITY  
-   Warm, efficient, never robotic. Short sentences. Never say "Certainly!", 
-   "Absolutely!", "Great question!", or "I'd be happy to help."
-   Never use bullet points or lists. One question per response maximum.
+| | `agent/prompts/system.py` (Phase 1 chat) | `scripts/vapi_setup.py` `_SYSTEM_PROMPT` (Phase 2 voice) |
+|---|---|---|
+| Identity | Elliot, Solstice Pilates receptionist | Same |
+| Personality | Warm, short sentences, no filler phrases | Same, slightly terser for voice |
+| Response rules | ≤2 sentences, one question per turn, no markdown | Same + spell out phone digits |
+| Studio context | Prices, hours, drop-in policy | Same |
+| Workflow | Group/birthday → name+phone only → log_call; billing/injury → escalate; regular booking → check_slot first | Same, with explicit tool parameter values (e.g. `priority="high"`) for reliability |
+| Few-shot examples | Full booking, reschedule, cancel examples | Same |
 
-3. RESPONSE RULES (voice-specific)
-   - Max 2 sentences per response
-   - Spell out all numbers: "four one five" not "415"
-   - No markdown formatting
-   - Use natural fillers while tools run: "Let me check that..."
-   - If you need info, ask for ONE thing at a time
-
-4. STUDIO CONTEXT (static knowledge)
-   Classes: Reformer ($35 drop-in), Mat ($25 drop-in), Tower ($40 drop-in)
-   Hours: Monday–Saturday 6am–8pm, Sunday 8am–2pm
-   Drop-ins: welcome, subject to availability
-   Private/group sessions: available for 6+ people, manager to confirm details
-
-5. WORKFLOW
-   Booking flow → check slot → confirm → get name + phone → complete
-   Running late → acknowledge → note on calendar → end warmly
-   Complaint/billing → acknowledge → collect callback → log urgent
-   Returning caller → greet by name → reference last visit
-
-6. FEW-SHOT EXAMPLES
-   [Full conversation examples from assignment brief + edge cases]
-```
+**Key voice-specific rules in `_SYSTEM_PROMPT`:**
+- Group/birthday: collect name and phone only — `log_call` with `reason="group_booking"`, `priority="high"`, `callback_required=true`
+- All tool parameter values written as quoted strings to prevent enum mismatches
+- `get_current_date` called before any relative-date slot check
 
 ---
 
@@ -401,58 +398,48 @@ PydanticAI has native OpenRouter support. Model IDs should be OpenRouter model I
 
 ## Vapi Assistant Config (Phase 2)
 
+Managed by `scripts/vapi_setup.py` — run manually to create or update the assistant. Tool descriptions are read from agent tool docstrings (`_doc(fn)`) so there is one source of truth.
+
 ```python
-# vapi/setup.py — run once to create assistant
-# Provider and model read from env
+# scripts/vapi_setup.py (simplified)
+model = CreateAssistantDtoModel_Openai(
+    model=os.environ.get("VAPI_LLM_MODEL", "gpt-4o"),
+    tools=_build_tools(webhook_url),   # each tool → POST /vapi/webhook
+    temperature=0.3,
+)
+voice = CreateAssistantDtoVoice_Vapi(voice_id="Elliot")
 
-import os
-
-VAPI_PROVIDER = os.environ.get("VAPI_LLM_PROVIDER", "openrouter")
-VAPI_MODEL    = os.environ.get("VAPI_LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
-
-assistant = {
-    "name": "Solstice Pilates Receptionist",
-    "model": {
-        "provider": VAPI_PROVIDER,       # "openrouter" | "anthropic" | "openai" etc.
-        "model": VAPI_MODEL,
-        "systemPrompt": SYSTEM_PROMPT,
-        "temperature": 0.4,
-    },
-    "voice": {
-        "provider": "11labs",
-        "voiceId": "21m00Tcm4TlvDq8ikWAM",  # Rachel — warm, professional
-    },
-    "transcriber": {
-        "provider": "deepgram",
-        "model": "nova-2",
-        "language": "en-US",
-    },
-    "firstMessage": "Thanks for calling Solstice Pilates, how can I help?",
-    "endCallMessage": "Thanks for calling, have a great day!",
-    "tools": [
-        # Each tool points to POST /vapi/webhook with tool name in body
-        # Vapi sends tool name + args, we route internally
-    ]
-}
+# Tool descriptions sourced from agent docstrings:
+_doc(_agent_cal.check_slot)   # → Vapi tool description
 ```
 
-**Latency tuning:**
-- Keep tool webhook responses under 2s (GCal calls are the bottleneck)
-- Wrap all GCal calls in `run_in_executor` — never block the event loop
-- If voice latency feels slow, try Groq provider directly on Vapi (`provider: "groq"`, `model: "llama-3.3-70b-versatile"`)
+**Tool webhook flow:**
+1. Vapi LLM decides to call a tool → sends `POST /vapi/webhook` with `type=tool-calls`
+2. `VapiService.handle_tool_calls` loads `BookingSession` from Redis by `call.id`
+3. Dispatches to the matching domain function in `_TOOL_DISPATCH`
+4. Saves updated session, returns `{"results": [{"toolCallId": "...", "result": "..."}]}`
+5. On `end-of-call-report`, session is deleted from Redis
+
+**Critical Vapi response rules:**
+- Always HTTP 200, even on errors
+- `result` must be a plain string — no objects, no arrays, no newlines
+- `toolCallId` must exactly match the ID from the request
+
+**Latency:**
+- All GCal calls wrapped in `run_in_executor` — never block the event loop
+- Target < 2s per tool webhook response
 
 ---
 
 ## Environment Variables
 
 ```env
-# LLM (OpenRouter recommended — OpenAI-compatible)
-LLM_API_KEY=                   # OpenRouter key (or Anthropic key if using direct)
-LLM_MODEL=meta-llama/llama-3.3-70b-instruct # swap to anthropic/claude-sonnet-4-5 for demo
+# Phase 1 LLM (PydanticAI agent)
+LLM_API_KEY=                   # OpenRouter key
+LLM_MODEL=anthropic/claude-sonnet-4-5  # or meta-llama/llama-3.3-70b-instruct for dev
 
-# Vapi LLM (can differ from Phase 1 model)
-VAPI_LLM_PROVIDER=openrouter
-VAPI_LLM_MODEL=meta-llama/llama-3.3-70b-instruct
+# Phase 2 LLM (Vapi runs this — OpenAI model ID)
+VAPI_LLM_MODEL=gpt-4o
 
 # Google
 GOOGLE_SERVICE_ACCOUNT_JSON=   # path to service account key file
@@ -464,7 +451,8 @@ REDIS_URL=redis://localhost:6379
 
 # Vapi
 VAPI_API_KEY=
-VAPI_PHONE_NUMBER_ID=          # created via Vapi dashboard or setup.py
+VAPI_ASSISTANT_ID=             # set after first run of scripts/vapi_setup.py
+VAPI_PHONE_NUMBER_ID=          # set after Twilio number is imported into Vapi
 
 # Logfire
 LOGFIRE_TOKEN=
@@ -494,8 +482,8 @@ ngrok http 8000
 # 5. Seed calendar
 python scripts/seed_calendar.py
 
-# 6. Create Vapi assistant (Phase 2)
-python vapi/setup.py
+# 6. Create/update Vapi assistant (Phase 2)
+uv run python scripts/vapi_setup.py
 ```
 
 ---
