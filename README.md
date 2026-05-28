@@ -34,7 +34,7 @@ docker run -d --name solstice-redis -p 6379:6379 redis:alpine
 uvicorn api.main:app --reload --port 8000
 ```
 
-See [architecture.md](architecture.md) for full system design.
+See [architecture.md](architecture.md) for system design and [tradeoffs.md](tradeoffs.md) for design decisions and alternatives considered.
 
 ## Environment variables
 
